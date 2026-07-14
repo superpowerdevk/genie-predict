@@ -1,0 +1,178 @@
+<!doctype html>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<!--
+  Genie Predict — forecast dashboard surface.
+  FAST BY DESIGN: no canvas, no animation loop, no fetch, no libraries, no web fonts.
+  The agent injects window.__FORECAST__ before this runs; the surface paints ONCE and stops.
+-->
+<style>
+  :root{
+    --bg:#0b0f14; --card:#111823; --line:#1d2836; --ink:#e8eef6; --dim:#8296ab;
+    --yes:#5ad19a; --no:#ff6b81; --mkt:#7aa2ff; --gold:#ffcf6f; --mint:#6ff5c0;
+    --mono:"SF Mono",ui-monospace,"Cascadia Code","JetBrains Mono",Menlo,monospace;
+  }
+  *{margin:0;padding:0;box-sizing:border-box}
+  body{background:transparent;color:var(--ink);font-family:var(--mono);font-size:13px;line-height:1.5}
+  .wrap{max-width:640px}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:18px 18px 16px;margin-bottom:12px}
+  .q{font-size:15px;font-weight:700;color:#fff;letter-spacing:-.01em;line-height:1.35}
+  .meta{font-size:11px;color:var(--dim);margin-top:5px}
+  .row{display:flex;align-items:center;gap:10px;margin:11px 0}
+  .row .lab{width:96px;font-size:11px;color:var(--dim);flex:none;text-transform:uppercase;letter-spacing:.06em}
+  .track{flex:1;height:9px;background:#0a0e13;border-radius:6px;position:relative;overflow:hidden}
+  .fill{position:absolute;top:0;left:0;height:100%;border-radius:6px}
+  .pct{width:44px;text-align:right;font-weight:700;font-size:13px;flex:none}
+  .mkt .fill{background:var(--mkt)} .mkt .pct{color:var(--mkt)}
+  .imp .fill{background:var(--gold)} .imp .pct{color:var(--gold)}
+  .read .fill{background:var(--mint)} .read .pct{color:var(--mint)}
+  .edge{display:flex;align-items:center;justify-content:space-between;margin-top:14px;padding:12px 14px;
+    border-radius:10px;background:linear-gradient(180deg,rgba(111,245,192,.06),transparent);border:1px solid var(--line)}
+  .edge.no{background:linear-gradient(180deg,rgba(255,107,129,.07),transparent)}
+  .edge .big{font-size:20px;font-weight:800;letter-spacing:-.01em}
+  .edge .big.yes{color:var(--yes)} .edge .big.no{color:var(--no)}
+  .edge .sub{font-size:10px;color:var(--dim);text-transform:uppercase;letter-spacing:.08em;margin-top:2px}
+  .conf{font-size:10px;text-transform:uppercase;letter-spacing:.08em;padding:3px 9px;border-radius:20px;font-weight:700}
+  .conf.high{background:rgba(90,209,154,.14);color:var(--yes)}
+  .conf.medium{background:rgba(255,207,111,.14);color:var(--gold)}
+  .conf.low{background:rgba(255,107,129,.14);color:var(--no)}
+  h4{font-size:10px;text-transform:uppercase;letter-spacing:.1em;color:var(--dim);margin:16px 0 8px;font-weight:700}
+  .why{list-style:none} .why li{padding:6px 0 6px 16px;position:relative;font-size:12px;border-bottom:1px solid #0e141c}
+  .why li:last-child{border:none} .why li:before{content:"›";position:absolute;left:2px;color:var(--mint)}
+  .play{margin-top:14px;padding:13px 15px;border-radius:10px;background:#0d1420;border:1px solid var(--line)}
+  .play .act{font-size:14px;font-weight:800} .play .act.yes{color:var(--yes)} .play .act.no{color:var(--no)}
+  .play .txt{font-size:12px;color:var(--ink);margin-top:3px}
+  .kelly{display:flex;gap:14px;margin-top:12px}
+  .kelly .k{flex:1;background:#0d1420;border:1px solid var(--line);border-radius:9px;padding:10px 12px}
+  .kelly .k .kk{font-size:9px;text-transform:uppercase;letter-spacing:.1em;color:var(--dim)}
+  .kelly .k .kv{font-size:17px;font-weight:800;color:var(--gold);margin-top:2px}
+  .cta{display:block;margin-top:14px;text-align:center;padding:13px;border-radius:10px;text-decoration:none;
+    background:linear-gradient(180deg,#1b2740,#141d30);border:1px solid #2a3b57;color:#cfe0ff;font-weight:700;font-size:13px}
+  .rec{font-size:11px}
+  .rec .hd{display:flex;justify-content:space-between;align-items:center;margin-bottom:10px}
+  .rec .beat{font-size:10px;text-transform:uppercase;letter-spacing:.06em;padding:3px 9px;border-radius:20px;font-weight:700}
+  .rec .beat.win{background:rgba(90,209,154,.14);color:var(--yes)}
+  .rec .beat.lose{background:rgba(255,107,129,.14);color:var(--no)}
+  .brier{display:flex;gap:12px;margin-bottom:10px}
+  .brier .b{flex:1;text-align:center;background:#0d1420;border:1px solid var(--line);border-radius:8px;padding:8px}
+  .brier .b .bl{font-size:9px;text-transform:uppercase;color:var(--dim);letter-spacing:.06em}
+  .brier .b .bv{font-size:16px;font-weight:800;margin-top:2px}
+  .foot{font-size:10px;color:var(--dim);text-align:center;margin-top:6px;letter-spacing:.03em}
+</style>
+
+<div class="wrap" id="app"></div>
+
+<script>
+(function(){
+  var F = window.__FORECAST__ || null;
+  var app = document.getElementById("app");
+
+  // No data injected (raw preview, or the agent didn't inject the blob) — show a clean
+  // placeholder instead of an empty card, so it never looks broken.
+  if (!F || typeof F !== "object" || (!F.question && typeof F.marketProb !== "number")) {
+    app.innerHTML =
+      '<div class="card" style="text-align:center;padding:32px 18px">'
+      + '<div style="font-size:26px;margin-bottom:8px">🔮</div>'
+      + '<div style="font-size:14px;font-weight:700;color:#fff">Genie Predict</div>'
+      + '<div style="font-size:12px;color:#8296ab;margin-top:6px;line-height:1.6">'
+      + 'Forecast dashboard ready.<br>Pick a market and I\'ll render the read, the edge, and the play here.'
+      + '</div></div>';
+    return;
+  }
+
+  function bar(cls, label, pct){
+    pct = Math.max(0, Math.min(100, +pct||0));
+    return '<div class="row '+cls+'"><span class="lab">'+label+'</span>'
+      + '<span class="track"><span class="fill" style="width:'+pct+'%"></span></span>'
+      + '<span class="pct">'+Math.round(pct)+'%</span></div>';
+  }
+
+  function esc(s){ return String(s==null?"":s).replace(/[&<>]/g,function(c){return {"&":"&amp;","<":"&lt;",">":"&gt;"}[c];}); }
+
+  var html = '<div class="card">';
+  html += '<div class="q">'+esc(F.question||"—")+'</div>';
+  var meta = [];
+  if(F.volume) meta.push(F.volume+" traded");
+  if(F.resolveDate) meta.push("resolves "+esc(F.resolveDate));
+  html += '<div class="meta">'+meta.join("  ·  ")+'</div>';
+
+  // probability bars — market, (options-implied if present), my read
+  html += (typeof F.marketProb==="number") ? bar("mkt","Market", F.marketProb) : "";
+  if(typeof F.impliedProb==="number"){
+    html += bar("imp","Implied", F.impliedProb);
+  }
+  html += (typeof F.myRead==="number") ? bar("read","My read", F.myRead) : "";
+  if(F.impliedMeta){ html += '<div class="meta" style="margin-left:106px">🧮 '+esc(F.impliedMeta)+'</div>'; }
+
+  // edge headline
+  if(typeof F.edgePts==="number" && F.edgeSide){
+    var side=(F.edgeSide||"").toUpperCase()==="NO"?"no":"yes";
+    html += '<div class="edge '+side+'">'
+      + '<div><div class="big '+side+'">'+(F.edgePts>=0?"+":"")+Math.round(F.edgePts)+' pts</div>'
+      + '<div class="sub">edge · '+esc(F.edgeSide)+' is the value side</div></div>'
+      + (F.confidence?'<span class="conf '+esc(F.confidence)+'">'+esc(F.confidence)+' confidence</span>':'')
+      + '</div>';
+  }
+
+  // reasons
+  if(F.reasons && F.reasons.length){
+    html += '<h4>Why</h4><ul class="why">';
+    F.reasons.forEach(function(r){ html += '<li>'+esc(r)+'</li>'; });
+    html += '</ul>';
+  }
+
+  // the play
+  if(F.play && F.play.action){
+    var pside=/no/i.test(F.play.action)?"no":"yes";
+    html += '<div class="play"><span class="act '+pside+'">📈 '+esc(F.play.action)+'</span>'
+      + (F.play.text?'<div class="txt">'+esc(F.play.text)+'</div>':'')+'</div>';
+  }
+
+  // kelly sizing
+  if(F.kelly && (F.kelly.pctBankroll!=null)){
+    html += '<div class="kelly">'
+      + '<div class="k"><div class="kk">Suggested size</div><div class="kv">'+(+F.kelly.pctBankroll).toFixed(1)+'%</div></div>'
+      + '<div class="k"><div class="kk">of bankroll · '+(F.kelly.fraction? (F.kelly.fraction+"×Kelly"):"Kelly")+'</div>'
+      + '<div class="kv" style="color:var(--dim);font-size:11px;font-weight:600">sizing guide, not advice</div></div>'
+      + '</div>';
+  }
+
+  // CTA
+  if(F.url){
+    html += '<a class="cta" href="'+esc(F.url)+'" target="_blank" rel="noopener">🎯 Place your bet on Polymarket →</a>';
+  }
+  html += '</div>';
+
+  // track record card (only if present)
+  var t = F.track;
+  if(t && t.nResolved){
+    html += '<div class="card rec">';
+    html += '<div class="hd"><h4 style="margin:0">📊 Track record · '+t.nResolved+' resolved</h4>'
+      + '<span class="beat '+(t.beatsMarket?"win":"lose")+'">'+(t.beatsMarket?"beats market":"trails market")+'</span></div>';
+    html += '<div class="brier">'
+      + '<div class="b"><div class="bl">Genie Brier</div><div class="bv" style="color:var(--mint)">'+t.brierMy+'</div></div>'
+      + '<div class="b"><div class="bl">Market Brier</div><div class="bv" style="color:var(--dim)">'+t.brierMarket+'</div></div>'
+      + '</div>';
+    // mini calibration chart (static SVG)
+    if(t.calibration && t.calibration.length){
+      var W=600,H=120,pad=24;
+      var svg='<svg viewBox="0 0 '+W+' '+H+'" style="width:100%;height:auto">';
+      // diagonal (perfect calibration)
+      svg+='<line x1="'+pad+'" y1="'+(H-pad)+'" x2="'+(W-pad)+'" y2="'+pad+'" stroke="#243247" stroke-width="1" stroke-dasharray="4 4"/>';
+      t.calibration.forEach(function(b){
+        var x=pad+(b.predicted/100)*(W-2*pad);
+        var y=(H-pad)-(b.actual/100)*(H-2*pad);
+        svg+='<circle cx="'+x+'" cy="'+y+'" r="'+(3+Math.min(6,(b.n||1)))+'" fill="#6ff5c0" opacity="0.75"/>';
+      });
+      svg+='<text x="'+pad+'" y="'+(H-6)+'" fill="#8296ab" font-size="9" font-family="monospace">predicted →</text>';
+      svg+='<text x="6" y="'+pad+'" fill="#8296ab" font-size="9" font-family="monospace">actual ↑</text>';
+      svg+='</svg>';
+      html += svg;
+    }
+    html += '<div class="foot">calibration: dots on the dashed line = predicted matches reality</div>';
+    html += '</div>';
+  }
+
+  app.innerHTML = html;
+})();
+</script>

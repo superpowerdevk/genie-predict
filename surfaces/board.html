@@ -1,0 +1,106 @@
+<!doctype html>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<!--
+  Genie Predict — category board surface.
+  FAST BY DESIGN: no canvas, no loop, no fetch, no libraries, no web fonts. Paints once.
+  Agent injects window.__BOARD__ before this runs. Tapping a tile/market calls sendPrompt().
+-->
+<style>
+  :root{
+    --bg:#0b0f14; --card:#111823; --line:#1d2836; --ink:#e8eef6; --dim:#8296ab;
+    --yes:#5ad19a; --mint:#6ff5c0; --accent:#7aa2ff;
+    --mono:"SF Mono",ui-monospace,"Cascadia Code","JetBrains Mono",Menlo,monospace;
+  }
+  *{margin:0;padding:0;box-sizing:border-box}
+  body{background:transparent;color:var(--ink);font-family:var(--mono);font-size:13px;line-height:1.5}
+  .wrap{max-width:640px}
+  .hd{font-size:15px;font-weight:800;color:#fff;letter-spacing:-.01em;margin-bottom:2px}
+  .sub{font-size:11px;color:var(--dim);margin-bottom:12px}
+  /* category chips — horizontal scroll row, Polymarket-style */
+  .cats{display:flex;gap:8px;overflow-x:auto;padding-bottom:10px;margin-bottom:14px;-webkit-overflow-scrolling:touch}
+  .cats::-webkit-scrollbar{height:0}
+  .chip{flex:none;cursor:pointer;border:1px solid var(--line);background:var(--card);color:var(--ink);
+    border-radius:22px;padding:8px 14px;font-size:12px;font-weight:600;white-space:nowrap;font-family:var(--mono);
+    transition:border-color .12s,background .12s}
+  .chip:hover{border-color:#33465e}
+  .chip.active{background:linear-gradient(180deg,#1b2740,#141d30);border-color:#33465e;color:#cfe0ff}
+  .chip .e{margin-right:5px}
+  /* market cards */
+  .mkt{display:flex;align-items:center;gap:12px;cursor:pointer;background:var(--card);border:1px solid var(--line);
+    border-radius:12px;padding:13px 15px;margin-bottom:9px;transition:border-color .12s,transform .06s}
+  .mkt:hover{border-color:#33465e}
+  .mkt:active{transform:scale(.995)}
+  .mkt .body{flex:1;min-width:0}
+  .mkt .t{font-size:13px;font-weight:700;color:#fff;line-height:1.35;
+    display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+  .mkt .m{font-size:10px;color:var(--dim);margin-top:4px;letter-spacing:.02em}
+  .odds{flex:none;text-align:center;min-width:56px}
+  .odds .p{font-size:20px;font-weight:800;color:var(--yes);line-height:1}
+  .odds .l{font-size:9px;color:var(--dim);text-transform:uppercase;letter-spacing:.06em;margin-top:3px}
+  .odds .ring{width:44px;height:44px;margin:0 auto 4px;border-radius:50%;position:relative;
+    background:conic-gradient(var(--yes) calc(var(--pct)*1%), #1a2536 0)}
+  .odds .ring:after{content:"";position:absolute;inset:5px;border-radius:50%;background:var(--card)}
+  .odds .ring .pv{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;
+    font-size:12px;font-weight:800;color:#fff;z-index:1}
+  .empty{padding:26px 18px;text-align:center;color:var(--dim);font-size:12px}
+  .foot{font-size:10px;color:var(--dim);text-align:center;margin-top:8px;letter-spacing:.03em}
+</style>
+
+<div class="wrap" id="app"></div>
+
+<script>
+(function(){
+  var B = window.__BOARD__ || null;
+  var app = document.getElementById("app");
+
+  function go(prompt){ try{ if(window.sendPrompt) window.sendPrompt(prompt); }catch(e){} }
+  function esc(s){ return String(s==null?"":s).replace(/[&<>"]/g,function(c){return {"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c];}); }
+
+  if(!B || typeof B !== "object" || !Array.isArray(B.categories)){
+    app.innerHTML = '<div class="card empty" style="background:#111823;border:1px solid #1d2836;border-radius:14px">'
+      + '<div style="font-size:24px;margin-bottom:6px">🔮</div>'
+      + '<div style="color:#fff;font-weight:700;font-size:14px">Genie Predict</div>'
+      + '<div style="margin-top:6px">Category board ready — pick a topic and I\'ll load the live markets.</div></div>';
+    return;
+  }
+
+  var h = '';
+  h += '<div class="hd">'+(B.headingEmoji||"🔥")+' '+esc(B.heading||"Trending")+'</div>';
+  h += '<div class="sub">Tap a category to browse · tap a market for Genie\'s read &amp; edge</div>';
+
+  // category chips
+  h += '<div class="cats">';
+  B.categories.forEach(function(c){
+    var on = c.key === B.activeCategory ? " active" : "";
+    h += '<button class="chip'+on+'" data-p="'+esc(c.prompt)+'">'
+       + '<span class="e">'+(c.emoji||"")+'</span>'+esc(c.label)+'</button>';
+  });
+  h += '</div>';
+
+  // markets
+  if(B.markets && B.markets.length){
+    B.markets.forEach(function(m){
+      var pct = Math.max(0, Math.min(100, +m.yesPct||0));
+      h += '<div class="mkt" data-p="'+esc(m.prompt)+'">'
+        + '<div class="body"><div class="t">'+esc(m.title)+'</div>'
+        + '<div class="m">'+(m.volume?esc(m.volume)+" traded":"")+'</div></div>'
+        + '<div class="odds"><div class="ring" style="--pct:'+pct+'"><span class="pv">'+Math.round(pct)+'</span></div>'
+        + '<div class="l">'+esc(m.yesLabel||"Yes")+'</div></div>'
+        + '</div>';
+    });
+  } else {
+    h += '<div class="empty">No markets to show here right now — try another category.</div>';
+  }
+
+  h += '<div class="foot">Odds are the market\'s. Genie\'s independent read appears when you open a market.</div>';
+
+  app.innerHTML = h;
+
+  // wire taps (event delegation; no inline handlers)
+  app.addEventListener("click", function(e){
+    var el = e.target.closest("[data-p]");
+    if(el) go(el.getAttribute("data-p"));
+  });
+})();
+</script>
