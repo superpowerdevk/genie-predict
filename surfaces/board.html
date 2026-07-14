@@ -58,10 +58,12 @@
   function esc(s){ return String(s==null?"":s).replace(/[&<>"]/g,function(c){return {"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c];}); }
 
   if(!B || typeof B !== "object" || !Array.isArray(B.categories)){
-    app.innerHTML = '<div class="card empty" style="background:#111823;border:1px solid #1d2836;border-radius:14px">'
+    app.innerHTML = '<div class="card empty" style="background:#111823;border:1px solid #1d2836;border-radius:14px;cursor:pointer" id="loadbtn">'
       + '<div style="font-size:24px;margin-bottom:6px">🔮</div>'
       + '<div style="color:#fff;font-weight:700;font-size:14px">Genie Predict</div>'
-      + '<div style="margin-top:6px">Category board ready — pick a topic and I\'ll load the live markets.</div></div>';
+      + '<div style="margin-top:6px">Tap to load the live prediction markets →</div></div>';
+    var lb = document.getElementById("loadbtn");
+    if(lb) lb.addEventListener("click", function(){ go("show trending markets"); });
     return;
   }
 

@@ -13,21 +13,33 @@ Genie is the **forecasting brain**. It surfaces markets, forms an independent pr
 - "run genie-predict", "start", or no specific market → render SCREEN 0 (the board).
 
 ## THE BOARD (entry point)
-When the user opens Genie Predict, says "start", or asks to browse/see markets or categories:
-1. Run `python3 polymarket.py board_ui` (add a tag to filter, e.g. `board_ui crypto`).
-2. It prints a JSON blob. Render `surfaces/board.html` via `render_ui`, injecting it right after
-   `<body>`: `<script>window.__BOARD__=<blob>;</script>`. The surface shows Polymarket-style
-   category chips (Trending, Politics, Crypto, Sports, World Cup, Geopolitics, Economy, Finance,
-   Tech, Culture) plus the live trending/filtered markets. It's static and instant.
-3. The surface is self-driving: tapping a category chip sends "show <category> markets" back to
-   chat → you re-run `board_ui <tag>` and re-render. Tapping a market sends "forecast <slug>" →
-   you run the forecast flow below. So you don't narrate options — just render the board and let
-   the user tap.
-4. Category → tag mapping for `board_ui`: politics→politics, crypto→crypto, sports→sports,
-   world cup→world-cup, geopolitics→geopolitics, economy→economics, finance→finance, tech→tech,
-   culture→culture, trending→(no tag).
+When the user opens Genie Predict, says "start", or asks to browse/see markets or categories,
+render the visual board. **This is a TWO-STEP process — never render the surface without doing step 1 first, or it will show an empty placeholder.**
 
+**STEP 1 — get the data (REQUIRED):** run `python3 polymarket.py board_ui` (add a tag to filter,
+e.g. `board_ui crypto`). This prints a JSON blob to stdout. You MUST capture that exact blob.
 
+**STEP 2 — render with the data injected:** call `render_ui` with `surfaces/board.html`, and inject
+the blob from step 1 right after `<body>`:
+`<script>window.__BOARD__=<paste the exact JSON from step 1>;</script>`
+The `window.__BOARD__=` injection is MANDATORY. If you render board.html without it, the user sees
+"Category board ready" with no markets — that is a bug, not the intended output. If step 1 returned
+no markets or errored, tell the user in chat and try a different category — do NOT render the empty surface.
+
+The surface shows Polymarket-style category chips (Trending, Politics, Crypto, Sports, World Cup,
+Geopolitics, Economy, Finance, Tech, Culture) plus live markets, and is static/instant.
+
+**It's self-driving:** tapping a category chip sends "show <category> markets" to chat → you re-run
+STEP 1+2 with that tag. Tapping a market sends "forecast <slug>" → you run the FORECASTING flow below.
+So don't narrate options as text — just render the populated board and let the user tap.
+
+Category → tag for `board_ui`: politics→politics, crypto→crypto, sports→sports, world cup→world-cup,
+geopolitics→geopolitics, economy→economics, finance→finance, tech→tech, culture→culture, trending→(none).
+
+**Fallback only:** if `render_ui` is genuinely unavailable, use the SCREEN 0 markdown board further below.
+
+## FORECASTING
+1. User asks about a topic → `python3 polymarket.py search "<topic>"` (or `events` for the board) → numbered list.
 2. User picks a market → `python3 polymarket.py market <slug>` → resolution criteria, odds, the market **slug**, and (for crypto price markets) a **Deribit options-implied probability** to anchor your read to.
 3. Research the event, form YOUR OWN probability, compute the edge vs the market.
 4. **Render the interactive dashboard** (fast, preferred): run
