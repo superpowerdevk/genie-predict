@@ -71,6 +71,12 @@ rendered with no WHY section and read == market means you skipped the analysis �
 "broken empty card" failure this rule exists to prevent. If you genuinely see no edge, say so IN the
 arguments: read near market, reasons stating what's priced in, play "Lean" toward the marginal value side.
 
+**NEVER debug or modify this skill's own files.** If a script command errors, is killed, or returns
+something broken: render whatever it printed (the script emits render-ready error cards), tell the
+user in ONE sentence that the skill hit an internal error, and stop. Do not trace memory, do not
+patch polymarket.py, do not edit the cache, do not retry with workarounds — that burns the user's
+credits doing maintenance work that is not yours and does not persist. Broken skill = report + stop.
+
 **If `board` returns markets that don't match a category** (wrong data, empty, API hiccup):
 render its output anyway — the board shows an honest "no markets" state on its own. NEVER hand-build
 board or forecast HTML from `events` text output or from your own knowledge; a hand-built surface has

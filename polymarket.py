@@ -529,47 +529,35 @@ CATEGORIES = [
 
 
 _CACHE_TTL = 90  # seconds; keeps back-to-board re-renders fast without staleness
-_CACHE_LOCK = None  # created lazily; guards read-modify-write of the cache file across threads
 
 
 def _cache_path() -> str:
     import tempfile
-    return os.path.join(tempfile.gettempdir(), "genie-predict-gamma-cache.json")
+    return os.path.join(tempfile.gettempdir(), "genie-predict-board-cache.json")
 
 
-def _get_cached(path: str):
-    """_get with a short-TTL disk cache — makes repeat board builds (back-navigation) near-instant.
-    The parallel board build calls this from many threads at once, so the read-modify-write of the
-    cache file is serialized with a lock; without it, threads clobber each other's entries
-    (last-write-wins) and the cache silently holds only one category."""
-    global _CACHE_LOCK
-    import threading, time as _t
-    if _CACHE_LOCK is None:
-        _CACHE_LOCK = threading.Lock()
-    key = path
-    with _CACHE_LOCK:
-        try:
-            with open(_cache_path()) as f:
-                store = json.load(f)
-        except Exception:
-            store = {}
-        hit = store.get(key)
-        if hit and (_t.time() - hit["at"]) < _CACHE_TTL:
-            return hit["data"]
-    data = _get(path)
-    with _CACHE_LOCK:
-        try:
-            try:
-                with open(_cache_path()) as f:
-                    store = json.load(f)
-            except Exception:
-                store = {}
-            store[key] = {"at": _t.time(), "data": data}
-            with open(_cache_path(), "w") as f:
-                json.dump(store, f)
-        except Exception:
-            pass
-    return data
+def _board_cache_get():
+    """Return the cached PROCESSED boards dict if fresh, else None. We cache the slim final
+    boards (a few KB), never raw Gamma responses — raw responses are ~4MB each, and caching
+    them meant multi-MB JSON reads/writes per call, which is what OOMed Genie's sandbox."""
+    import time as _t
+    try:
+        with open(_cache_path()) as f:
+            store = json.load(f)
+        if (_t.time() - store.get("at", 0)) < _CACHE_TTL and isinstance(store.get("boards"), dict):
+            return store["boards"]
+    except Exception:
+        pass
+    return None
+
+
+def _board_cache_put(boards: dict) -> None:
+    import time as _t
+    try:
+        with open(_cache_path(), "w") as f:
+            json.dump({"at": _t.time(), "boards": boards}, f)
+    except Exception:
+        pass
 
 
 def _ev_has_tag(ev: dict, tag: str) -> bool:
@@ -585,50 +573,31 @@ def _ev_has_tag(ev: dict, tag: str) -> bool:
     return False
 
 
-def _fetch_category_markets(tag: str | None, target: int) -> list:
-    """Fetch + filter one category's markets. Used per-category by the parallel board build."""
-    fetch_limit = min(max(target * 4, 20), 100) if not tag else 100
-    qs = {"active": "true", "closed": "false", "archived": "false",
-          "order": "volume24hr", "ascending": "false", "limit": str(fetch_limit)}
-    if tag:
-        qs["tag_slug"] = tag
-    try:
-        data = _get_cached("/events?" + urllib.parse.urlencode(qs))
-    except Exception:
-        data = []
-    events = data if isinstance(data, list) else []
-    if tag:
-        # Gamma ignores unknown filter params (the old bare `tag` param did nothing — every
-        # category silently returned Trending). We send tag_slug AND enforce locally against
-        # each event's own tags array, so the category is correct regardless of server behavior.
-        events = [ev for ev in events if _ev_has_tag(ev, tag)]
-
-    markets = []
-    for ev in events:
-        mkts = ev.get("markets") or []
-        if not mkts:
-            continue
-        m = mkts[0]
-        label, pct = _board_odds(m)
-        if pct is None or pct < 5 or pct > 95:  # drop dead longshots/locks — keep the board lively
-            continue
-        ev_slug = ev.get("slug") or m.get("slug")
-        markets.append({
-            "slug": m.get("slug") or ev_slug,
-            "title": ev.get("title") or m.get("question") or "(market)",
-            "yesLabel": label or "Yes",
-            "yesPct": pct,
-            "volume": _fmt_money(ev.get("volume") or m.get("volume")),
-        })
-        if len(markets) >= target:
-            break
-    return markets
+def _market_row(ev: dict):
+    """Event -> board market row, or None if it fails the odds filter."""
+    mkts = ev.get("markets") or []
+    if not mkts:
+        return None
+    m = mkts[0]
+    label, pct = _board_odds(m)
+    if pct is None or pct < 5 or pct > 95:  # drop dead longshots/locks — keep the board lively
+        return None
+    ev_slug = ev.get("slug") or m.get("slug")
+    return {
+        "slug": m.get("slug") or ev_slug,
+        "title": ev.get("title") or m.get("question") or "(market)",
+        "yesLabel": label or "Yes",
+        "yesPct": pct,
+        "volume": _fmt_money(ev.get("volume") or m.get("volume")),
+    }
 
 
 def _build_board(active: str | None = None, limit: int = 6) -> dict:
-    """Build the FULL board: every category's markets fetched in parallel, so the surface can
-    switch categories client-side with zero agent round-trips. `active` is a category KEY
-    (e.g. "crypto") or a Gamma tag (both accepted); defaults to trending. Pure — no printing."""
+    """Build the FULL board: every category's markets, so the surface switches categories
+    client-side with zero agent round-trips. MEMORY-LIGHT BY DESIGN: Genie's sandbox kills
+    thread pools and large parallel fetches, so this makes ONE bulk request for the top
+    events and buckets them into categories locally by their tags. `active` is a category
+    KEY (e.g. "crypto") or a Gamma tag (both accepted). Pure — no printing."""
     target = max(1, int(limit))
 
     # normalize: accept key or tag
@@ -640,15 +609,63 @@ def _build_board(active: str | None = None, limit: int = 6) -> dict:
                 active_key = c["key"]
                 break
 
-    from concurrent.futures import ThreadPoolExecutor
-    boards: dict = {}
-    with ThreadPoolExecutor(max_workers=len(CATEGORIES)) as pool:
-        futs = {c["key"]: pool.submit(_fetch_category_markets, c["tag"], target) for c in CATEGORIES}
-        for key, fut in futs.items():
+    cached = _board_cache_get()
+    if cached is not None:
+        boards = cached
+    else:
+        # ONE fetch: top events by 24h volume. Processed immediately into slim rows, then the
+        # raw multi-MB response is discarded — nothing big is ever held or written to disk.
+        qs = {"active": "true", "closed": "false", "archived": "false",
+              "order": "volume24hr", "ascending": "false", "limit": "150"}
+        try:
+            data = _get("/events?" + urllib.parse.urlencode(qs))
+        except Exception:
+            data = []
+        pool = data if isinstance(data, list) else []
+
+        boards = {}
+        for c in CATEGORIES:
+            rows = []
+            for ev in pool:
+                if c["tag"] and not _ev_has_tag(ev, c["tag"]):
+                    continue
+                row = _market_row(ev)
+                if row:
+                    rows.append(row)
+                if len(rows) >= target:
+                    break
+            boards[c["key"]] = rows
+        del pool, data  # release the raw response before anything else runs
+
+        # Top-up pass: any category the bulk pool left thin gets ONE small sequential fetch.
+        # Bounded (max 4 per build) and processed the same slim way.
+        topups = 0
+        for c in CATEGORIES:
+            if not c["tag"] or len(boards[c["key"]]) >= 2 or topups >= 4:
+                continue
+            topups += 1
             try:
-                boards[key] = fut.result(timeout=20)
+                tqs = {"active": "true", "closed": "false", "archived": "false",
+                       "order": "volume24hr", "ascending": "false", "limit": "40",
+                       "tag_slug": c["tag"]}
+                tdata = _get("/events?" + urllib.parse.urlencode(tqs))
+                tevents = tdata if isinstance(tdata, list) else []
+                rows = []
+                for ev in tevents:
+                    if not _ev_has_tag(ev, c["tag"]):
+                        continue
+                    row = _market_row(ev)
+                    if row:
+                        rows.append(row)
+                    if len(rows) >= target:
+                        break
+                if len(rows) > len(boards[c["key"]]):
+                    boards[c["key"]] = rows
+                del tdata, tevents
             except Exception:
-                boards[key] = []
+                pass
+
+        _board_cache_put(boards)  # few KB — this is all back-navigation needs
 
     markets = []
     return {
