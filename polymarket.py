@@ -528,23 +528,45 @@ CATEGORIES = [
 ]
 
 
+def _ev_has_tag(ev: dict, tag: str) -> bool:
+    """True if the event carries the given Gamma tag slug (checks the event's own tags array)."""
+    want = tag.lower()
+    for t in (ev.get("tags") or []):
+        if not isinstance(t, dict):
+            continue
+        slug = str(t.get("slug") or "").lower()
+        label = str(t.get("label") or "").lower()
+        if slug == want or label == want.replace("-", " "):
+            return True
+    return False
+
+
 def _build_board(tag: str | None = None, limit: int = 6) -> dict:
     """Build the board data dict (categories + markets). Pure — no printing."""
     target = max(1, int(limit))
     # Over-fetch: the <5%/>95% odds filter below drops some fraction of events, and we don't
-    # re-fetch to backfill. Ask Gamma for more than `target` so filtering still lands on target
-    # when enough qualifying markets exist. Gamma's /events accepts up to 500/call (default 25),
-    # so this has plenty of headroom — it's not the old API-limit workaround it looks like.
-    fetch_limit = min(max(target * 4, 20), 100)
+    # re-fetch to backfill. Gamma's /events accepts up to 500/call (default 25).
+    # When a tag is requested, fetch a much larger pool because (a) Gamma ignores unknown filter
+    # params (the bare `tag` param does nothing — categories were silently returning Trending),
+    # and (b) even with tag_slug sent, we enforce the filter LOCALLY against each event's own
+    # tags array so the category board is correct regardless of what the server honors.
+    fetch_limit = min(max(target * 4, 20), 100) if not tag else 100
     qs = {"active": "true", "closed": "false", "archived": "false",
           "order": "volume24hr", "ascending": "false", "limit": str(fetch_limit)}
     if tag:
-        qs["tag"] = tag
+        qs["tag_slug"] = tag
     try:
         data = _get("/events?" + urllib.parse.urlencode(qs))
     except Exception:
         data = []
     events = data if isinstance(data, list) else []
+    if tag:
+        filtered = [ev for ev in events if _ev_has_tag(ev, tag)]
+        # If the server DID honor tag_slug, events already match and local filtering is a no-op.
+        # If it ignored it, this is what makes the category real. Only fall back to unfiltered
+        # if filtering finds nothing at all AND the response looks tag-blind (better to show
+        # an honest empty state than silently show Trending labeled as another category).
+        events = filtered
 
     markets = []
     for ev in events:

@@ -29,7 +29,7 @@ alternate/markdown board for normal use. `events` and `worldcup` are data comman
 by `board`/`portfolio`, never a substitute render path for you.**
 1. `python3 polymarket.py board` (add a tag to filter, e.g. `board crypto`). This prints a COMPLETE,
    ready-to-render HTML page with the market data already baked in.
-2. Pass that ENTIRE output as the `html` to `render_ui` (surfaceId `"genie_predict_board"`). Do not
+2. Pass that ENTIRE output as the `html` to `render_ui` (surfaceId `"genie_predict"`). Do not
    edit it, do not inject anything, do not add a `<script>` — the data is already inside.
 3. Reply with AT MOST one short sentence (e.g. "Here's what's trending — tap any market for my read.").
    **Do NOT list the markets as text** — they're already on the board. Listing them again is duplication.
@@ -38,22 +38,36 @@ by `board`/`portfolio`, never a substitute render path for you.**
 **Never** run `events` or `worldcup` and render their text output as the board — that step is what
 caused text dumps instead of the tappable dashboard. The `board` command gives you finished HTML. Use it.
 
+**ONE SURFACE, ALWAYS.** Every render — board loads, category taps, AND forecasts — goes to the SAME
+surfaceId: `"genie_predict"`, and if `render_ui` accepts a `mode` param, always pass `mode: "replace"`
+(never `append` or `patch` — each render is a complete page). Never use a second surfaceId (no
+`genie_predict_forecast`, no
+`genie_predict_board`): two ids = two stacked panels, which is a bug, not navigation. The dashboard is
+one panel that changes contents in place: board → (tap market) → forecast card replaces the board on
+that same surface → (tap ← back) → board replaces the forecast. If a render ever appears as a NEW
+panel below instead of updating the existing one, the surfaceId was wrong — fix the id, do not narrate.
+
 **Taps are self-driving.** Board taps arrive as ui_event messages, e.g.
-`[ui_event surface=genie_predict_board name=predict_nav] {"category":"crypto"}` or
+`[ui_event surface=genie_predict name=predict_nav] {"category":"crypto"}` or
 `[ui_event ... name=predict_forecast] {"slug":"...", "cat":"crypto"}`. Handle them IMMEDIATELY, no
 questions asked, and treat them exactly as OUTPUT DISCIPLINE above says — render_ui call + at most one
 short sentence, never a text description of the category or market:
 - **`predict_nav`** → run `python3 polymarket.py board <tag-for-that-category>` and call `render_ui`
-  with that output (same surfaceId `"genie_predict_board"`, so it patches in place). That IS the
+  with that output (surfaceId `"genie_predict"`, so it patches the dashboard in place). That IS the
   response to the tap. Do not also describe the category or list markets in chat text.
 - **`predict_forecast`** → go straight to the FORECASTING flow for that slug: run
   `forecast <slug> … --back=<cat from the tap payload>` (pass the `cat` value through AS-IS — it's
   already a category KEY like "crypto", not a Gamma tag, so don't convert it) and call `render_ui`
-  (surfaceId `"genie_predict_forecast"`). Do not re-run `board` first, and do not describe the market
-  or its odds in chat text — the card is the answer. The `--back=` value drives the card's "← back to
-  board" pill; if `cat` is missing (e.g. user typed a slug directly instead of tapping), omit `--back=`
-  and it defaults to Trending.
+  (surfaceId `"genie_predict"` — SAME surface, replacing the board in place). Do not re-run `board`
+  first, and do not describe the market or its odds in chat text — the card is the answer. The
+  `--back=` value drives the card's "← back to board" pill; if `cat` is missing (e.g. user typed a
+  slug directly instead of tapping), omit `--back=` and it defaults to Trending.
 These events ARE user actions — treat "category":"crypto" exactly as if the user typed "show crypto markets".
+
+**If `board <tag>` returns markets that don't match the category** (wrong data, empty, API hiccup):
+render its output anyway — the board shows an honest "no markets" state on its own. NEVER hand-build
+board or forecast HTML from `events` text output or from your own knowledge; a hand-built surface has
+no working taps and breaks the whole loop. The script is the only source of surface HTML.
 
 Category → tag: politics→politics, crypto→crypto, sports→sports, world cup→world-cup,
 geopolitics→geopolitics, economy→economics, finance→finance, tech→tech, culture→culture, trending→(none).
@@ -78,7 +92,7 @@ already answered in text once, or by default — only because the tool itself is
    `--back=` is optional — pass the `cat` from a `predict_forecast` tap payload verbatim; omit it
    entirely if there isn't one (e.g. user typed/searched a slug directly). It only drives the card's
    back-to-board pill, nothing else.
-2. Pass that ENTIRE output as `html` to `render_ui` (surfaceId `"genie_predict_forecast"`). Don't edit or inject.
+2. Pass that ENTIRE output as `html` to `render_ui` (surfaceId `"genie_predict"` — SAME surface as the board, replacing it in place). Don't edit or inject.
 3. Then log it (silent): `python3 polymarket.py logforecast <slug> <your_read_pct> <market_pct> <resolve_date> <method>`
    (`method` = `deribit-implied` for crypto, else `agent`).
 4. Reply with at most one sentence. Don't restate the card as text.
