@@ -682,6 +682,14 @@ def _build_forecast(slug: str, my_read: str = "", reasons_json: str = "", play_t
     data = _get("/markets?slug=" + urllib.parse.quote(slug))
     m = (data[0] if isinstance(data, list) and data else (data if isinstance(data, dict) else None))
     if not m:
+        # Board slugs can be EVENT slugs (e.g. "fifwc-fra-esp-2026-07-14"), not market slugs.
+        # Resolve via /events and take its lead market rather than failing — a failed lookup
+        # here is exactly what tempts the agent into hand-building a card.
+        ev_data = _get("/events?slug=" + urllib.parse.quote(slug))
+        ev = (ev_data[0] if isinstance(ev_data, list) and ev_data else (ev_data if isinstance(ev_data, dict) else None))
+        if ev and (ev.get("markets") or []):
+            m = ev["markets"][0]
+    if not m:
         return {"error": f"market '{slug}' not found"}
 
     label, mkt_pct = _odds(m)
@@ -814,7 +822,23 @@ def cmd_forecast(slug: str, my_read: str = "", reasons: str = "", play_text: str
     "cat" field) — pass through as-is, don't convert to a Gamma tag."""
     blob = _build_forecast(slug, my_read, reasons, play_text, back_key)
     if "error" in blob:
-        print(f"<!-- {blob['error']} -->")
+        # Print a COMPLETE renderable error card — never a bare comment. If this command's output
+        # is always render-ready, the agent never has a reason to hand-build a surface.
+        back = next((c for c in CATEGORIES if c["key"] == (back_key or "")), CATEGORIES[0])
+        err_html = (
+            '<!doctype html>\n<meta charset="utf-8">\n'
+            '<style>body{background:transparent;color:#e8eef6;font-family:ui-monospace,Menlo,monospace;font-size:13px}'
+            '.back{display:inline-block;margin-bottom:10px;padding:6px 12px;border-radius:999px;background:#111823;'
+            'border:1px solid #1d2836;color:#8296ab;cursor:pointer}'
+            '.card{background:#111823;border:1px solid #1d2836;border-radius:14px;padding:26px 18px;text-align:center}</style>'
+            '<div class="back" id="bk">\u2190 ' + back["emoji"] + ' ' + back["label"] + '</div>'
+            '<div class="card"><div style="font-size:22px;margin-bottom:8px">\U0001f52e</div>'
+            '<div style="color:#fff;font-weight:700">Couldn\u2019t load that market</div>'
+            '<div style="color:#8296ab;margin-top:6px;font-size:12px">' + blob["error"] + ' \u2014 it may have just closed. Head back and pick another.</div></div>'
+            '<script>document.getElementById("bk").addEventListener("click",function(){'
+            'try{if(window.genie&&genie.emit)genie.emit("predict_nav",{category:"' + back["key"] + '"});}catch(e){}});</script>'
+        )
+        print(err_html)
         return
     print(_render_surface("forecast.html", {"__FORECAST__": blob}))
 
