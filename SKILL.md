@@ -40,15 +40,35 @@ Don't narrate options as text — render the populated board and let taps drive.
 Category → tag for `board_ui`: politics→politics, crypto→crypto, sports→sports, world cup→world-cup,
 geopolitics→geopolitics, economy→economics, finance→finance, tech→tech, culture→culture, trending→(none).
 
+**Board efficiency:** a `predict_nav` tap needs exactly TWO steps — run `board_ui <tag>`, render with
+the blob injected. No searches, no market fetches, no template re-reads, no narration. A `predict_forecast`
+tap goes straight to the FORECASTING flow — do not re-run `board_ui` first.
+
 **Fallback only:** if `render_ui` is genuinely unavailable, use the SCREEN 0 markdown board further below.
 
 ## FORECASTING
+**Credit efficiency — these rules are mandatory:**
+- **NEVER spawn a delegate/sub-agent for forecast research.** It costs 6-8 credits and has produced
+  fabricated results. All research happens inline, in this context.
+- **Search budget: at most 1-2 targeted web searches per forecast** (recent news + one stat/odds
+  check). If the event is already in context from this session, reuse it — zero new searches.
+- **Crypto price markets (BTC/ETH threshold): ZERO web searches.** The Deribit options-implied
+  number IS the read — anchor to it directly. Only search if the resolution is touch/any-point
+  and you need to confirm the wording.
+- **Pass reasons pipe-delimited, not JSON:** `forecast_ui <slug> <read> 'reason one|reason two'`
+  — no quoting failures, no wasted retries. If a bash command fails, fix it once; never re-run blind.
+- **Don't echo script outputs back into your reasoning.** Run the command, extract the numbers you
+  need, move on. Don't restate the full blob, the full market card, or the HTML.
+- **Read the surface HTML templates at most once per session.** After rendering, drop them from
+  working context — never re-read per tap.
+
 1. User asks about a topic → `python3 polymarket.py search "<topic>"` (or `events` for the board) → numbered list.
 2. User picks a market → `python3 polymarket.py market <slug>` → resolution criteria, odds, the market **slug**, and (for crypto price markets) a **Deribit options-implied probability** to anchor your read to.
 3. Research the event, form YOUR OWN probability, compute the edge vs the market.
 4. **Render the interactive dashboard** (fast, preferred): run
-   `python3 polymarket.py forecast_ui <slug> <your_read_pct> '<reasons_json>'`
-   which prints a JSON blob. Then call `render_ui` with `surfaces/forecast.html`, injecting that
+   `python3 polymarket.py forecast_ui <slug> <your_read_pct> 'reason one|reason two|reason three'`
+   (pipe-delimited reasons — a JSON array also works but pipes avoid shell-quoting failures).
+   It prints a JSON blob. Then call `render_ui` with `surfaces/forecast.html`, injecting that
    blob as `window.__FORECAST__` right after `<body>`:
    `<script>window.__FORECAST__=<blob>;</script>`. The surface is static (no network, no loops) and
    paints instantly. Fill the blob's `play` before injecting: set

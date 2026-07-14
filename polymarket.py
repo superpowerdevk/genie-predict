@@ -586,15 +586,22 @@ def cmd_forecast_ui(slug: str, my_read: str = "", reasons_json: str = "") -> Non
             kelly_block = {"fraction": "0.25", "pctBankroll": capped,
                            "capped": capped < k["pct_bankroll"]}
 
-    # reasons
+    # reasons: accept EITHER a JSON array '["a","b"]' OR a simple pipe-delimited string
+    # 'reason one|reason two' (preferred — no shell-quoting hazards, no failed retries).
     reasons = []
     if reasons_json:
-        try:
-            r = json.loads(reasons_json)
-            if isinstance(r, list):
-                reasons = [str(x) for x in r][:4]
-        except Exception:
-            reasons = []
+        parsed_ok = False
+        s = reasons_json.strip()
+        if s.startswith("["):
+            try:
+                r = json.loads(s)
+                if isinstance(r, list):
+                    reasons = [str(x) for x in r][:4]
+                    parsed_ok = True
+            except Exception:
+                parsed_ok = False
+        if not parsed_ok and s and not s.startswith("["):
+            reasons = [p.strip() for p in s.split("|") if p.strip()][:4]
 
     # track record
     track = None
