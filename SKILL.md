@@ -8,79 +8,84 @@ description: Forecast Polymarket prediction markets — real odds plus Genie's o
 Genie is the **forecasting brain**. It surfaces markets, forms an independent probability, and shows the edge vs the market. **It does NOT place trades.** For betting, it hands the user the Polymarket link for that exact market — they trade on Polymarket, on their own wallet, in their own region.
 
 ## OUTPUT DISCIPLINE (critical)
-- Your reply is ONLY the screen markdown — no narration, no "let me…", no commands shown, no tool chatter.
-- Reformat any script output into the exact screen below. Never paste raw script output. Never collapse lists into a paragraph — every item is its own bullet line.
-- "run genie-predict", "start", or no specific market → render SCREEN 0 (the board).
+- **"The screen" means the `render_ui` call.** Whenever this file says "render SCREEN 0" or "render the
+  output," that means: call `render_ui` with the HTML from `board`/`forecast`, patching the existing
+  surfaceId. It does NOT mean typing the SCREEN 0/1 markdown into your chat reply — those markdown
+  blocks are a fallback template for when `render_ui` is absent, not a description of your normal reply.
+- **On every board load and every tap (`predict_nav`, `predict_forecast`), your entire reply is:**
+  (1) the `render_ui` tool call, and (2) at most one short sentence of chat text. Nothing else.
+  Never write out a market list, a forecast, odds, or "here's what changed" as chat prose — if you
+  catch yourself composing more than one sentence of reply text for a board/forecast turn, stop:
+  that content belongs in the render_ui HTML, not the chat message.
+- Never paste raw script output into chat. Never collapse lists into a paragraph.
+- "run genie-predict", "start", or no specific market → render SCREEN 0 (the board) — i.e. call
+  `render_ui` per THE BOARD section below.
 
 ## THE BOARD (entry point)
-When the user opens Genie Predict, says "start", or asks to browse/see markets or categories,
-render the visual board. **This is a TWO-STEP process — never render the surface without doing step 1 first, or it will show an empty placeholder.**
+When the user opens Genie Predict, says "start", or asks to browse/see markets or categories:
 
-**STEP 1 — get the data (REQUIRED):** run `python3 polymarket.py board_ui` (add a tag to filter,
-e.g. `board_ui crypto`). This prints a JSON blob to stdout. You MUST capture that exact blob.
+**Run ONE command and render its output. That's it. This is the ONLY board path — there is no
+alternate/markdown board for normal use. `events` and `worldcup` are data commands used internally
+by `board`/`portfolio`, never a substitute render path for you.**
+1. `python3 polymarket.py board` (add a tag to filter, e.g. `board crypto`). This prints a COMPLETE,
+   ready-to-render HTML page with the market data already baked in.
+2. Pass that ENTIRE output as the `html` to `render_ui` (surfaceId `"genie_predict_board"`). Do not
+   edit it, do not inject anything, do not add a `<script>` — the data is already inside.
+3. Reply with AT MOST one short sentence (e.g. "Here's what's trending — tap any market for my read.").
+   **Do NOT list the markets as text** — they're already on the board. Listing them again is duplication.
 
-**STEP 2 — render with the data injected:** call `render_ui` with `surfaces/board.html`, and inject
-the blob from step 1 right after `<body>`:
-`<script>window.__BOARD__=<paste the exact JSON from step 1>;</script>`
-The `window.__BOARD__=` injection is MANDATORY. If you render board.html without it, the user sees
-"Category board ready" with no markets — that is a bug, not the intended output. If step 1 returned
-no markets or errored, tell the user in chat and try a different category — do NOT render the empty surface.
+**Never** run `board_ui` (the old JSON command) and hand-inject — that step is what caused empty boards.
+**Never** run `events` or `worldcup` and render their text output as the board — that step is what
+caused text dumps instead of the tappable dashboard. The `board` command gives you finished HTML. Use it.
 
-The surface shows Polymarket-style category chips (Trending, Politics, Crypto, Sports, World Cup,
-Geopolitics, Economy, Finance, Tech, Culture) plus live markets, and is static/instant.
+**Taps are self-driving.** Board taps arrive as ui_event messages, e.g.
+`[ui_event surface=genie_predict_board name=predict_nav] {"category":"crypto"}` or
+`[ui_event ... name=predict_forecast] {"slug":"...", "cat":"crypto"}`. Handle them IMMEDIATELY, no
+questions asked, and treat them exactly as OUTPUT DISCIPLINE above says — render_ui call + at most one
+short sentence, never a text description of the category or market:
+- **`predict_nav`** → run `python3 polymarket.py board <tag-for-that-category>` and call `render_ui`
+  with that output (same surfaceId `"genie_predict_board"`, so it patches in place). That IS the
+  response to the tap. Do not also describe the category or list markets in chat text.
+- **`predict_forecast`** → go straight to the FORECASTING flow for that slug: run
+  `forecast <slug> … --back=<cat from the tap payload>` (pass the `cat` value through AS-IS — it's
+  already a category KEY like "crypto", not a Gamma tag, so don't convert it) and call `render_ui`
+  (surfaceId `"genie_predict_forecast"`). Do not re-run `board` first, and do not describe the market
+  or its odds in chat text — the card is the answer. The `--back=` value drives the card's "← back to
+  board" pill; if `cat` is missing (e.g. user typed a slug directly instead of tapping), omit `--back=`
+  and it defaults to Trending.
+These events ARE user actions — treat "category":"crypto" exactly as if the user typed "show crypto markets".
 
-**It's self-driving via events:** the board surface emits events when tapped (the same `genie.emit`
-mechanism the games use — `sendPrompt` is NOT available in the sandbox). Handle them:
-- **`predict_nav` `{category}`** → the user tapped a category chip. Re-run STEP 1+2 with that
-  category's tag (e.g. category "crypto" → `board_ui crypto`), re-render the board.
-- **`predict_forecast` `{slug}`** → the user tapped a market. Run the FORECASTING flow for that slug
-  (→ `forecast_ui <slug> …` → render `forecast.html`).
-Don't narrate options as text — render the populated board and let taps drive.
-
-Category → tag for `board_ui`: politics→politics, crypto→crypto, sports→sports, world cup→world-cup,
+Category → tag: politics→politics, crypto→crypto, sports→sports, world cup→world-cup,
 geopolitics→geopolitics, economy→economics, finance→finance, tech→tech, culture→culture, trending→(none).
 
-**Board efficiency:** a `predict_nav` tap needs exactly TWO steps — run `board_ui <tag>`, render with
-the blob injected. No searches, no market fetches, no template re-reads, no narration. A `predict_forecast`
-tap goes straight to the FORECASTING flow — do not re-run `board_ui` first.
-
-**Fallback only:** if `render_ui` is genuinely unavailable, use the SCREEN 0 markdown board further below.
+**Fallback ONLY — read this before ever using SCREEN 0/1 markdown below:** the markdown screens
+further down this file exist for the rare case where the `render_ui` tool is not present at all in
+this runtime (not merely "seems slow" or "I'm not sure it'll work" — actually absent from your tools).
+If `render_ui` is present, you MUST use it for every board load and every forecast, including on
+`predict_nav`/`predict_forecast` taps. Do not fall back to markdown because a tap arrived, because you
+already answered in text once, or by default — only because the tool itself is unavailable.
 
 ## FORECASTING
-**Credit efficiency — these rules are mandatory:**
-- **NEVER spawn a delegate/sub-agent for forecast research.** It costs 6-8 credits and has produced
-  fabricated results. All research happens inline, in this context.
-- **Search budget: at most 1-2 targeted web searches per forecast** (recent news + one stat/odds
-  check). If the event is already in context from this session, reuse it — zero new searches.
-- **Crypto price markets (BTC/ETH threshold): ZERO web searches.** The Deribit options-implied
-  number IS the read — anchor to it directly. Only search if the resolution is touch/any-point
-  and you need to confirm the wording.
-- **Pass reasons pipe-delimited, not JSON:** `forecast_ui <slug> <read> 'reason one|reason two'`
-  — no quoting failures, no wasted retries. If a bash command fails, fix it once; never re-run blind.
-- **Don't echo script outputs back into your reasoning.** Run the command, extract the numbers you
-  need, move on. Don't restate the full blob, the full market card, or the HTML.
-- **Read the surface HTML templates at most once per session.** After rendering, drop them from
-  working context — never re-read per tap.
+**Credit efficiency — mandatory:**
+- **NEVER spawn a delegate/sub-agent for research.** Costs 6-8 credits and has fabricated results. Research inline.
+- **≤1-2 targeted web searches per forecast.** Reuse in-context data. **Crypto price markets: ZERO searches** — the Deribit anchor IS the read.
+- **Don't echo script output back into your reasoning.** Extract the numbers, move on.
 
-1. User asks about a topic → `python3 polymarket.py search "<topic>"` (or `events` for the board) → numbered list.
-2. User picks a market → `python3 polymarket.py market <slug>` → resolution criteria, odds, the market **slug**, and (for crypto price markets) a **Deribit options-implied probability** to anchor your read to.
-3. Research the event, form YOUR OWN probability, compute the edge vs the market.
-4. **Render the interactive dashboard** (fast, preferred): run
-   `python3 polymarket.py forecast_ui <slug> <your_read_pct> 'reason one|reason two|reason three'`
-   (pipe-delimited reasons — a JSON array also works but pipes avoid shell-quoting failures).
-   It prints a JSON blob. Then call `render_ui` with `surfaces/forecast.html`, injecting that
-   blob as `window.__FORECAST__` right after `<body>`:
-   `<script>window.__FORECAST__=<blob>;</script>`. The surface is static (no network, no loops) and
-   paints instantly. Fill the blob's `play` before injecting: set
-   `play={"action":"Bet YES|Bet NO|Lean YES|Lean NO","text":"<one line tying the play to your reasons>"}`.
-5. **Then log the forecast** for the track record (silent, no output shown):
-   `python3 polymarket.py logforecast <slug> <your_read_pct> <market_pct> <resolve_date> <method>`
-   (`method` = `deribit-implied` if the card used the options anchor, else `agent`).
-6. **Fallback:** if `render_ui` is unavailable, render the SCREEN 1 markdown card below instead.
+**Run ONE command and render its output:**
+1. `python3 polymarket.py forecast <slug> <your_read_pct> 'reason one|reason two' 'one-line play rationale' --back=<category-key>`
+   — prints COMPLETE ready-to-render forecast HTML with everything baked in (odds, Deribit edge, Kelly, track record).
+   For crypto markets you can omit your read (it anchors to the Deribit number automatically).
+   `--back=` is optional — pass the `cat` from a `predict_forecast` tap payload verbatim; omit it
+   entirely if there isn't one (e.g. user typed/searched a slug directly). It only drives the card's
+   back-to-board pill, nothing else.
+2. Pass that ENTIRE output as `html` to `render_ui` (surfaceId `"genie_predict_forecast"`). Don't edit or inject.
+3. Then log it (silent): `python3 polymarket.py logforecast <slug> <your_read_pct> <market_pct> <resolve_date> <method>`
+   (`method` = `deribit-implied` for crypto, else `agent`).
+4. Reply with at most one sentence. Don't restate the card as text.
 
 ### CRYPTO PRICE MARKETS — anchor to the options-implied number
-For BTC/ETH price-threshold markets ("Will BTC reach $X by <date>"), `market <slug>` and
-`forecast_ui` attach a **Deribit options-implied probability**. This is a real, market-derived
+For BTC/ETH price-threshold markets ("Will BTC reach $X by <date>"), the `forecast` command
+attaches a **Deribit options-implied probability**. This is a real, market-derived
 number — usually sharper than the Polymarket price. **Anchor "My read" to it.** Only deviate with a
 specific stated reason (e.g. the market resolves on "touch/any-point" rather than finishing price —
 those resolve higher than the finishing-price number; or a known catalyst). Compute the edge against
@@ -108,7 +113,13 @@ Reply with a number.
 ```
 (Header **"🔥 Trending"** by default; after a category pick, that category e.g. "🪙 Crypto markets". 1–5 forecast the shown market → SCREEN 1. **6 = FIFA World Cup is a mandatory, always-listed category** → reload via `polymarket.py worldcup` (its output includes a link to the full Polymarket World Cup board — keep it). 7–11 reload filtered via `polymarket.py events --tag=<politics|sports|crypto|economics|geopolitics>`, keeping the category row. If the user sends a `0x…` address → run `polymarket.py profile <address>` → SCREEN 2. Bulleted so lines never collapse; max 5; drop dead longshots Yes <3% or >97%.
 
-**Portfolio dashboard (bottom strip):** the `events`/`worldcup` script ALWAYS prints a 👛 portfolio block at the very bottom after a `─────────────` divider — render it verbatim, every time, below the board. It shows the user's open positions and PnL, "no active positions yet" if flat, or a prompt to add a wallet if none is saved. Never drop it, never summarise it into prose.)
+**Portfolio dashboard — NOT currently on the HTML board.** `board`/`render_ui` does **not** include the
+👛 portfolio strip (that's a gap in the current build, tracked separately — don't try to inject or
+improvise one). For positions/PnL, run `polymarket.py portfolio` (or `profile <address>`) as its own
+reply when the user asks for it. Do not paste portfolio text underneath a rendered board — that
+recreates the exact "text + card duplication" bug this file exists to prevent.
+
+**Portfolio dashboard (legacy, markdown-fallback screens only):** the `events`/`worldcup` script ALWAYS prints a 👛 portfolio block at the very bottom after a `─────────────` divider — render it verbatim, every time, below the board. It shows the user's open positions and PnL, "no active positions yet" if flat, or a prompt to add a wallet if none is saved. Never drop it, never summarise it into prose.)
 
 ### SCREEN 1 — Forecast (ends with the Polymarket link)
 ```
@@ -152,7 +163,12 @@ When the user wants to see their own positions / P&L, ask for their **public** P
 - If the address is missing or malformed, the script returns a friendly "where to find your address" hint — render that as-is; do not invent or guess an address.
 
 ## WALLET & PORTFOLIO DASHBOARD
-The board shows the user's live positions + PnL at the bottom on every run. The script resolves the wallet in this order: a `--wallet=0x…` flag → the `POLYMARKET_WALLET` env var → a saved file at `~/.genie-predict/wallet.json`. Data comes from Polymarket's public, keyless positions API — read-only.
+**The primary HTML board (`board`/`render_ui`) does NOT show this yet — see the note under SCREEN 0
+above.** Only the legacy markdown `events`/`worldcup` commands print the positions+PnL strip
+automatically. On the normal render_ui path, positions/PnL are shown only when the user explicitly
+asks (run `portfolio`/`profile <address>` and reply with just that, not appended under a board).
+
+The script resolves the wallet in this order: a `--wallet=0x…` flag → the `POLYMARKET_WALLET` env var → a saved file at `~/.genie-predict/wallet.json`. Data comes from Polymarket's public, keyless positions API — read-only.
 
 - **First run / no wallet saved:** the dashboard area shows a prompt to drop a public `0x…` address. When the user provides one, run `polymarket.py setwallet <address>` (validates, saves, and prints their dashboard). After that, every `events`/`worldcup` run auto-loads it and shows the live strip — the user is never asked again.
 - **If this runtime does NOT persist files** (the saved file gets wiped, e.g. on reinstall): remember the user's address and pass it on every board call as `polymarket.py events --wallet=0x…` / `worldcup --wallet=0x…`. The script still re-saves it each time, so persistence is a bonus, not a requirement.

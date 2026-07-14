@@ -16,6 +16,9 @@
   body{background:transparent;color:var(--ink);font-family:var(--mono);font-size:13px;line-height:1.5}
   .wrap{max-width:640px}
   .card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:18px 18px 16px;margin-bottom:12px}
+  .back{display:inline-block;margin-bottom:10px;padding:6px 12px;border-radius:999px;background:var(--card);
+    border:1px solid var(--line);color:var(--dim);font:inherit;font-size:12px;cursor:pointer;user-select:none}
+  .back:active{opacity:.55}
   .q{font-size:15px;font-weight:700;color:#fff;letter-spacing:-.01em;line-height:1.35}
   .meta{font-size:11px;color:var(--dim);margin-top:5px}
   .row{display:flex;align-items:center;gap:10px;margin:11px 0}
@@ -89,7 +92,8 @@
 
   function esc(s){ return String(s==null?"":s).replace(/[&<>]/g,function(c){return {"&":"&amp;","<":"&lt;",">":"&gt;"}[c];}); }
 
-  var html = '<div class="card">';
+  var html = '<div class="back" data-nav="'+esc(F.backCategory||"trending")+'">← '+esc(F.backEmoji||"🔥")+' '+esc(F.backLabel||"Trending")+'</div>';
+  html += '<div class="card">';
   html += '<div class="q">'+esc(F.question||"—")+'</div>';
   var meta = [];
   if(F.volume) meta.push(F.volume+" traded");
@@ -174,5 +178,18 @@
   }
 
   app.innerHTML = html;
+
+  // back pill → predict_nav, same bridge + instant-ack pattern as board.html
+  function emit(event, payload){
+    try{ if(window.genie && genie.emit) genie.emit(event, payload||{}); }catch(e){}
+  }
+  app.addEventListener("click", function(e){
+    var back = e.target.closest("[data-nav]");
+    if(back){
+      back.style.opacity = "0.55";
+      back.textContent = window.genie && window.genie.emit ? "Loading…" : "⚠ bridge unavailable — tap didn't reach Genie";
+      emit("predict_nav", {category: back.getAttribute("data-nav")});
+    }
+  });
 })();
 </script>

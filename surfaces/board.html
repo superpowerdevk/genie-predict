@@ -103,12 +103,33 @@
 
   app.innerHTML = h;
 
-  // wire taps via event delegation → genie.emit
+  // wire taps via event delegation → genie.emit, with INSTANT visual feedback so a tap is
+  // always acknowledged (and so we can tell a dead click from a slow agent response).
+  function ack(el, label){
+    el.style.opacity = "0.55";
+    var note = document.createElement("div");
+    note.textContent = window.genie && window.genie.emit ? ("Loading " + label + "…") : "⚠ bridge unavailable — tap didn't reach Genie";
+    note.style.cssText = "font-size:10px;color:#8296ab;letter-spacing:.04em;padding:6px 2px;font-family:inherit";
+    app.insertBefore(note, app.firstChild);
+    setTimeout(function(){ el.style.opacity = "1"; }, 1200);
+  }
   app.addEventListener("click", function(e){
     var chip = e.target.closest("[data-nav]");
-    if(chip){ emit("predict_nav", {category: chip.getAttribute("data-nav")}); return; }
+    if(chip){
+      // immediate active-state switch so the tap is visibly registered
+      var chips = app.querySelectorAll(".chip");
+      for(var i=0;i<chips.length;i++) chips[i].className = chips[i].className.replace(" active","");
+      chip.className += " active";
+      ack(chip, chip.textContent.trim());
+      emit("predict_nav", {category: chip.getAttribute("data-nav")});
+      return;
+    }
     var mkt = e.target.closest("[data-slug]");
-    if(mkt){ emit("predict_forecast", {slug: mkt.getAttribute("data-slug")}); return; }
+    if(mkt){
+      ack(mkt, "forecast");
+      emit("predict_forecast", {slug: mkt.getAttribute("data-slug"), cat: B.activeCategory || "trending"});
+      return;
+    }
   });
 })();
 </script>

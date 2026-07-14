@@ -127,6 +127,26 @@ def _odds(market: dict):
     return label, round(pr * 100)
 
 
+def _board_odds(market: dict):
+    """For the board display: return (label, pct) for the NAMED contender the market is about —
+    i.e. the first outcome that isn't a generic 'No'/'Field'/'Other'. This makes cards read
+    'Spain 21%' not 'Field 79%'. Falls back to the leading outcome if all are generic."""
+    outs = _parse_list(market.get("outcomes"))
+    prices = _parse_list(market.get("outcomePrices"))
+    pairs = []
+    for o, p in zip(outs, prices):
+        try:
+            pairs.append((str(o), float(p)))
+        except Exception:
+            continue
+    if not pairs:
+        return None, None
+    generic = {"no", "field", "other", "none", "neither"}
+    named = [pp for pp in pairs if pp[0].strip().lower() not in generic]
+    label, pr = (named[0] if named else max(pairs, key=lambda x: x[1]))
+    return label, round(pr * 100)
+
+
 def _fmt_money(v) -> str:
     try:
         v = float(v)
@@ -146,6 +166,34 @@ def _json_for_inline_script(obj) -> str:
     strings cannot terminate the script block. '<\/' is valid JSON and parses back
     identical to '</' in the browser."""
     return json.dumps(obj).replace("</", "<\\/")
+
+
+_SURF_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "surfaces")
+
+
+def _render_surface(surface_file: str, injections: dict) -> str:
+    """Load a surface HTML template and return the COMPLETE, ready-to-render HTML with the
+    data already injected as window.<VAR> globals right after <body> (or at the top if no body).
+    This lets the agent run ONE command and pass the result straight to render_ui — no
+    capture-and-paste of a separate JSON blob, which is the step that keeps failing."""
+    path = os.path.join(_SURF_DIR, surface_file)
+    try:
+        with open(path, encoding="utf-8") as f:
+            html = f.read()
+    except Exception as e:  # noqa: BLE001
+        return f"<!-- surface load failed: {e} -->"
+    script = "<script>" + "".join(
+        f"window.{k}={_json_for_inline_script(v)};" for k, v in injections.items()
+    ) + "</script>"
+    # inject as early as possible so the surface's own script sees the data on first run
+    if "<body>" in html:
+        return html.replace("<body>", "<body>" + script, 1)
+    # our surfaces have no <body> tag (they start with <meta>); inject right after the last <meta>
+    m = list(re.finditer(r"<meta[^>]*>", html))
+    if m:
+        idx = m[-1].end()
+        return html[:idx] + script + html[idx:]
+    return script + html
 
 
 def _date(s) -> str:
@@ -480,12 +528,16 @@ CATEGORIES = [
 ]
 
 
-def cmd_board_ui(tag: str | None = None, limit: int = 6) -> None:
-    """Emit the window.__BOARD__ JSON for the visual category board surface:
-    the category tiles (always) plus the trending / category-filtered markets to show.
-    Static, pre-computed — the surface just renders it."""
+def _build_board(tag: str | None = None, limit: int = 6) -> dict:
+    """Build the board data dict (categories + markets). Pure — no printing."""
+    target = max(1, int(limit))
+    # Over-fetch: the <5%/>95% odds filter below drops some fraction of events, and we don't
+    # re-fetch to backfill. Ask Gamma for more than `target` so filtering still lands on target
+    # when enough qualifying markets exist. Gamma's /events accepts up to 500/call (default 25),
+    # so this has plenty of headroom — it's not the old API-limit workaround it looks like.
+    fetch_limit = min(max(target * 4, 20), 100)
     qs = {"active": "true", "closed": "false", "archived": "false",
-          "order": "volume24hr", "ascending": "false", "limit": str(max(1, min(int(limit), 12)))}
+          "order": "volume24hr", "ascending": "false", "limit": str(fetch_limit)}
     if tag:
         qs["tag"] = tag
     try:
@@ -500,8 +552,8 @@ def cmd_board_ui(tag: str | None = None, limit: int = 6) -> None:
         if not mkts:
             continue
         m = mkts[0]
-        label, pct = _odds(m)
-        if pct is None or pct < 3 or pct > 97:  # drop dead longshots
+        label, pct = _board_odds(m)
+        if pct is None or pct < 5 or pct > 95:  # drop dead longshots/locks — keep the board lively
             continue
         ev_slug = ev.get("slug") or m.get("slug")
         markets.append({
@@ -510,9 +562,8 @@ def cmd_board_ui(tag: str | None = None, limit: int = 6) -> None:
             "yesLabel": label or "Yes",
             "yesPct": pct,
             "volume": _fmt_money(ev.get("volume") or m.get("volume")),
-            "prompt": f"forecast {m.get('slug') or ev_slug}",
         })
-        if len(markets) >= limit:
+        if len(markets) >= target:
             break
 
     active_key = "trending"
@@ -522,30 +573,36 @@ def cmd_board_ui(tag: str | None = None, limit: int = 6) -> None:
                 active_key = c["key"]
                 break
 
-    blob = {
+    return {
         "activeCategory": active_key,
-        "categories": [{"key": c["key"], "label": c["label"], "emoji": c["emoji"], "prompt": c["prompt"]}
+        "categories": [{"key": c["key"], "label": c["label"], "emoji": c["emoji"]}
                        for c in CATEGORIES],
         "heading": next((c["label"] for c in CATEGORIES if c["key"] == active_key), "Trending"),
         "headingEmoji": next((c["emoji"] for c in CATEGORIES if c["key"] == active_key), "🔥"),
         "markets": markets,
     }
-    print(_json_for_inline_script(blob))
 
 
-def cmd_forecast_ui(slug: str, my_read: str = "", reasons_json: str = "") -> None:
-    """Emit the window.__FORECAST__ JSON blob for the fast dashboard surface.
+def cmd_board(tag: str | None = None, limit: int = 6) -> None:
+    """PREFERRED: print the COMPLETE board HTML with data already injected. The agent runs this
+    one command and passes the entire output straight to render_ui — nothing to capture or paste."""
+    board = _build_board(tag, limit)
+    print(_render_surface("board.html", {"__BOARD__": board}))
 
-    The agent calls this AFTER forming its read: it passes its final probability (my_read, %)
-    and its reasons (a JSON array). This command assembles everything else — market odds, the
-    Deribit implied prob, edge, Kelly sizing, and the track record — into one blob the surface
-    renders. Pre-computing here keeps the surface static and instant.
-    """
+
+def cmd_board_ui(tag: str | None = None, limit: int = 6) -> None:
+    """Legacy: print only the JSON blob (for manual injection). Prefer cmd_board."""
+    print(_json_for_inline_script(_build_board(tag, limit)))
+
+
+def _build_forecast(slug: str, my_read: str = "", reasons_json: str = "", play_text: str = "", back_key: str | None = None) -> dict:
+    """Build the forecast data dict. Pure — no printing. Auto-derives the play action from the
+    edge side; play_text (optional) is the one-line rationale. back_key: the board category KEY
+    (e.g. "crypto", not the Gamma tag) the user tapped in from — drives the back-to-board pill."""
     data = _get("/markets?slug=" + urllib.parse.quote(slug))
     m = (data[0] if isinstance(data, list) and data else (data if isinstance(data, dict) else None))
     if not m:
-        print(json.dumps({"error": f"market '{slug}' not found"}))
-        return
+        return {"error": f"market '{slug}' not found"}
 
     label, mkt_pct = _odds(m)
     mkt_pct = mkt_pct if mkt_pct is not None else 0
@@ -629,7 +686,17 @@ def cmd_forecast_ui(slug: str, my_read: str = "", reasons_json: str = "") -> Non
     ev = m.get("events") or []
     event_slug = (ev[0].get("slug") if ev and isinstance(ev[0], dict) else None) or m.get("slug") or slug
 
-    blob = {
+    # auto-derive the play action from the edge; the agent may supply a one-line rationale.
+    strong = abs(edge_pts) >= 8
+    if edge_side == "YES":
+        action = "Bet YES" if strong else "Lean YES"
+    else:
+        action = "Bet NO" if strong else "Lean NO"
+    play = {"action": action, "text": play_text} if (reasons or play_text or abs(edge_pts) >= 1) else None
+
+    back_cat = next((c for c in CATEGORIES if c["key"] == back_key), CATEGORIES[0])  # default: trending
+
+    return {
         "question": question,
         "resolveDate": end,
         "volume": _fmt_money(m.get("volume") or m.get("volumeNum")),
@@ -641,11 +708,31 @@ def cmd_forecast_ui(slug: str, my_read: str = "", reasons_json: str = "") -> Non
         "edgeSide": edge_side,
         "confidence": confidence,
         "reasons": reasons,
-        "play": None,  # agent fills the play text; action derivable from edge_side
+        "play": play,
         "kelly": kelly_block,
         "url": f"https://polymarket.com/event/{event_slug}",
         "track": track,
+        "backCategory": back_cat["key"],
+        "backLabel": back_cat["label"],
+        "backEmoji": back_cat["emoji"],
     }
+
+
+def cmd_forecast(slug: str, my_read: str = "", reasons: str = "", play_text: str = "", back_key: str | None = None) -> None:
+    """PREFERRED: print the COMPLETE forecast HTML with data injected. One command → render_ui.
+    reasons: pipe-delimited 'a|b|c'. play_text: optional one-line rationale.
+    back_key: category KEY to return to on the card's back pill (from the predict_forecast tap's
+    "cat" field) — pass through as-is, don't convert to a Gamma tag."""
+    blob = _build_forecast(slug, my_read, reasons, play_text, back_key)
+    if "error" in blob:
+        print(f"<!-- {blob['error']} -->")
+        return
+    print(_render_surface("forecast.html", {"__FORECAST__": blob}))
+
+
+def cmd_forecast_ui(slug: str, my_read: str = "", reasons_json: str = "") -> None:
+    """Legacy: print only the JSON blob (for manual injection). Prefer cmd_forecast."""
+    blob = _build_forecast(slug, my_read, reasons_json)
     print(_json_for_inline_script(blob))
 
 
@@ -706,10 +793,10 @@ def main() -> None:
         _save_wallet(explicit_wallet.strip())
 
     if not argv:
-        cmd_events(None, 8, wallet); return
+        cmd_board(None, 6); return
     cmd = argv[0]
     rest = argv[1:]
-    tag = None; limit = 8
+    tag = None; limit = 8; back = None
     for a in rest:
         if a.startswith("--tag="):
             tag = a.split("=", 1)[1]
@@ -718,6 +805,8 @@ def main() -> None:
                 limit = int(a.split("=", 1)[1])
             except Exception:
                 pass
+        elif a.startswith("--back="):
+            back = a.split("=", 1)[1]
     pos = [a for a in rest if not a.startswith("--")]
     try:
         if cmd in ("events", "e"):
@@ -745,13 +834,24 @@ def main() -> None:
                             pos[4] if len(pos) > 4 else "agent")
         elif cmd in ("resolve",):
             cmd_resolve(pos[0] if len(pos) > 0 else "", pos[1] if len(pos) > 1 else "0")
+        elif cmd in ("forecast", "forecast_html"):
+            # forecast <slug> <my_read_pct> ['reasons pipe-delimited'] ['play text'] [--back=<category-key>]
+            cmd_forecast(pos[0] if len(pos) > 0 else "",
+                         pos[1] if len(pos) > 1 else "",
+                         pos[2] if len(pos) > 2 else "",
+                         pos[3] if len(pos) > 3 else "",
+                         back)
+        elif cmd in ("board", "board_html"):
+            # board [tag] [limit]  -> prints complete injected HTML
+            cmd_board(pos[0] if len(pos) > 0 and pos[0] != "-" else None,
+                      int(pos[1]) if len(pos) > 1 and pos[1].isdigit() else 6)
         elif cmd in ("forecast_ui", "ui"):
-            # forecast_ui <slug> <my_read_pct> <reasons_json>
+            # legacy JSON-only
             cmd_forecast_ui(pos[0] if len(pos) > 0 else "",
                             pos[1] if len(pos) > 1 else "",
                             pos[2] if len(pos) > 2 else "")
         elif cmd in ("board_ui", "categories"):
-            # board_ui [tag] [limit]
+            # legacy JSON-only
             cmd_board_ui(pos[0] if len(pos) > 0 and pos[0] != "-" else None,
                          int(pos[1]) if len(pos) > 1 and pos[1].isdigit() else 6)
         else:
