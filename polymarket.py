@@ -528,6 +528,50 @@ CATEGORIES = [
 ]
 
 
+_CACHE_TTL = 90  # seconds; keeps back-to-board re-renders fast without staleness
+_CACHE_LOCK = None  # created lazily; guards read-modify-write of the cache file across threads
+
+
+def _cache_path() -> str:
+    import tempfile
+    return os.path.join(tempfile.gettempdir(), "genie-predict-gamma-cache.json")
+
+
+def _get_cached(path: str):
+    """_get with a short-TTL disk cache — makes repeat board builds (back-navigation) near-instant.
+    The parallel board build calls this from many threads at once, so the read-modify-write of the
+    cache file is serialized with a lock; without it, threads clobber each other's entries
+    (last-write-wins) and the cache silently holds only one category."""
+    global _CACHE_LOCK
+    import threading, time as _t
+    if _CACHE_LOCK is None:
+        _CACHE_LOCK = threading.Lock()
+    key = path
+    with _CACHE_LOCK:
+        try:
+            with open(_cache_path()) as f:
+                store = json.load(f)
+        except Exception:
+            store = {}
+        hit = store.get(key)
+        if hit and (_t.time() - hit["at"]) < _CACHE_TTL:
+            return hit["data"]
+    data = _get(path)
+    with _CACHE_LOCK:
+        try:
+            try:
+                with open(_cache_path()) as f:
+                    store = json.load(f)
+            except Exception:
+                store = {}
+            store[key] = {"at": _t.time(), "data": data}
+            with open(_cache_path(), "w") as f:
+                json.dump(store, f)
+        except Exception:
+            pass
+    return data
+
+
 def _ev_has_tag(ev: dict, tag: str) -> bool:
     """True if the event carries the given Gamma tag slug (checks the event's own tags array)."""
     want = tag.lower()
@@ -541,32 +585,23 @@ def _ev_has_tag(ev: dict, tag: str) -> bool:
     return False
 
 
-def _build_board(tag: str | None = None, limit: int = 6) -> dict:
-    """Build the board data dict (categories + markets). Pure — no printing."""
-    target = max(1, int(limit))
-    # Over-fetch: the <5%/>95% odds filter below drops some fraction of events, and we don't
-    # re-fetch to backfill. Gamma's /events accepts up to 500/call (default 25).
-    # When a tag is requested, fetch a much larger pool because (a) Gamma ignores unknown filter
-    # params (the bare `tag` param does nothing — categories were silently returning Trending),
-    # and (b) even with tag_slug sent, we enforce the filter LOCALLY against each event's own
-    # tags array so the category board is correct regardless of what the server honors.
+def _fetch_category_markets(tag: str | None, target: int) -> list:
+    """Fetch + filter one category's markets. Used per-category by the parallel board build."""
     fetch_limit = min(max(target * 4, 20), 100) if not tag else 100
     qs = {"active": "true", "closed": "false", "archived": "false",
           "order": "volume24hr", "ascending": "false", "limit": str(fetch_limit)}
     if tag:
         qs["tag_slug"] = tag
     try:
-        data = _get("/events?" + urllib.parse.urlencode(qs))
+        data = _get_cached("/events?" + urllib.parse.urlencode(qs))
     except Exception:
         data = []
     events = data if isinstance(data, list) else []
     if tag:
-        filtered = [ev for ev in events if _ev_has_tag(ev, tag)]
-        # If the server DID honor tag_slug, events already match and local filtering is a no-op.
-        # If it ignored it, this is what makes the category real. Only fall back to unfiltered
-        # if filtering finds nothing at all AND the response looks tag-blind (better to show
-        # an honest empty state than silently show Trending labeled as another category).
-        events = filtered
+        # Gamma ignores unknown filter params (the old bare `tag` param did nothing — every
+        # category silently returned Trending). We send tag_slug AND enforce locally against
+        # each event's own tags array, so the category is correct regardless of server behavior.
+        events = [ev for ev in events if _ev_has_tag(ev, tag)]
 
     markets = []
     for ev in events:
@@ -587,34 +622,57 @@ def _build_board(tag: str | None = None, limit: int = 6) -> dict:
         })
         if len(markets) >= target:
             break
+    return markets
 
+
+def _build_board(active: str | None = None, limit: int = 6) -> dict:
+    """Build the FULL board: every category's markets fetched in parallel, so the surface can
+    switch categories client-side with zero agent round-trips. `active` is a category KEY
+    (e.g. "crypto") or a Gamma tag (both accepted); defaults to trending. Pure — no printing."""
+    target = max(1, int(limit))
+
+    # normalize: accept key or tag
     active_key = "trending"
-    if tag:
+    if active:
+        a = active.strip().lower()
         for c in CATEGORIES:
-            if c["tag"] == tag:
+            if c["key"] == a or (c["tag"] or "") == a:
                 active_key = c["key"]
                 break
 
+    from concurrent.futures import ThreadPoolExecutor
+    boards: dict = {}
+    with ThreadPoolExecutor(max_workers=len(CATEGORIES)) as pool:
+        futs = {c["key"]: pool.submit(_fetch_category_markets, c["tag"], target) for c in CATEGORIES}
+        for key, fut in futs.items():
+            try:
+                boards[key] = fut.result(timeout=20)
+            except Exception:
+                boards[key] = []
+
+    markets = []
     return {
         "activeCategory": active_key,
         "categories": [{"key": c["key"], "label": c["label"], "emoji": c["emoji"]}
                        for c in CATEGORIES],
         "heading": next((c["label"] for c in CATEGORIES if c["key"] == active_key), "Trending"),
         "headingEmoji": next((c["emoji"] for c in CATEGORIES if c["key"] == active_key), "🔥"),
-        "markets": markets,
+        "boards": boards,                       # key -> markets, ALL categories, for client-side switching
+        "markets": boards.get(active_key, []),  # active category's markets (kept for compatibility)
     }
 
 
-def cmd_board(tag: str | None = None, limit: int = 6) -> None:
-    """PREFERRED: print the COMPLETE board HTML with data already injected. The agent runs this
-    one command and passes the entire output straight to render_ui — nothing to capture or paste."""
-    board = _build_board(tag, limit)
+def cmd_board(active: str | None = None, limit: int = 6) -> None:
+    """PREFERRED: print the COMPLETE board HTML with ALL categories' data injected. The agent runs
+    this one command and passes the entire output straight to render_ui. Category switching then
+    happens client-side inside the surface — no agent round-trip per chip tap."""
+    board = _build_board(active, limit)
     print(_render_surface("board.html", {"__BOARD__": board}))
 
 
-def cmd_board_ui(tag: str | None = None, limit: int = 6) -> None:
+def cmd_board_ui(active: str | None = None, limit: int = 6) -> None:
     """Legacy: print only the JSON blob (for manual injection). Prefer cmd_board."""
-    print(_json_for_inline_script(_build_board(tag, limit)))
+    print(_json_for_inline_script(_build_board(active, limit)))
 
 
 def _build_forecast(slug: str, my_read: str = "", reasons_json: str = "", play_text: str = "", back_key: str | None = None) -> dict:
@@ -718,6 +776,14 @@ def _build_forecast(slug: str, my_read: str = "", reasons_json: str = "", play_t
 
     back_cat = next((c for c in CATEGORIES if c["key"] == back_key), CATEGORIES[0])  # default: trending
 
+    # Bake the full board in so the card's ← back pill restores it CLIENT-SIDE, instantly,
+    # with no agent round-trip. The board build is disk-cached (built moments ago for the tap
+    # that led here), so this costs ~nothing.
+    try:
+        board_blob = _build_board(back_cat["key"], 6)
+    except Exception:
+        board_blob = None
+
     return {
         "question": question,
         "resolveDate": end,
@@ -737,6 +803,7 @@ def _build_forecast(slug: str, my_read: str = "", reasons_json: str = "", play_t
         "backCategory": back_cat["key"],
         "backLabel": back_cat["label"],
         "backEmoji": back_cat["emoji"],
+        "board": board_blob,  # full board data for instant client-side back-navigation
     }
 
 

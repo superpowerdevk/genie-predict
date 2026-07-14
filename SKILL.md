@@ -47,30 +47,37 @@ one panel that changes contents in place: board → (tap market) → forecast ca
 that same surface → (tap ← back) → board replaces the forecast. If a render ever appears as a NEW
 panel below instead of updating the existing one, the surfaceId was wrong — fix the id, do not narrate.
 
-**Taps are self-driving.** Board taps arrive as ui_event messages, e.g.
-`[ui_event surface=genie_predict name=predict_nav] {"category":"crypto"}` or
-`[ui_event ... name=predict_forecast] {"slug":"...", "cat":"crypto"}`. Handle them IMMEDIATELY, no
-questions asked, and treat them exactly as OUTPUT DISCIPLINE above says — render_ui call + at most one
-short sentence, never a text description of the category or market:
-- **`predict_nav`** → run `python3 polymarket.py board <tag-for-that-category>` and call `render_ui`
-  with that output (surfaceId `"genie_predict"`, so it patches the dashboard in place). That IS the
-  response to the tap. Do not also describe the category or list markets in chat text.
-- **`predict_forecast`** → go straight to the FORECASTING flow for that slug: run
-  `forecast <slug> … --back=<cat from the tap payload>` (pass the `cat` value through AS-IS — it's
-  already a category KEY like "crypto", not a Gamma tag, so don't convert it) and call `render_ui`
-  (surfaceId `"genie_predict"` — SAME surface, replacing the board in place). Do not re-run `board`
-  first, and do not describe the market or its odds in chat text — the card is the answer. The
-  `--back=` value drives the card's "← back to board" pill; if `cat` is missing (e.g. user typed a
-  slug directly instead of tapping), omit `--back=` and it defaults to Trending.
-These events ARE user actions — treat "category":"crypto" exactly as if the user typed "show crypto markets".
+**Taps are self-driving — and SPEED IS THE PRODUCT.** Two events exist:
+`[ui_event surface=genie_predict name=predict_forecast] {"slug":"...", "cat":"crypto"}` — user tapped a market.
+`[ui_event surface=genie_predict name=predict_nav] {"category":"crypto"}` — RARE fallback only: the
+forecast card restores the board client-side by itself (instantly, from embedded data). You'll only
+receive predict_nav if that embedded data was missing. Handle it if it arrives; don't expect it.
+(Category chip taps NO LONGER reach you — the board switches categories client-side from data already
+baked in. If you ever think you need to re-render the board because a category changed, you're wrong.)
 
-**If `board <tag>` returns markets that don't match the category** (wrong data, empty, API hiccup):
+Handle both IMMEDIATELY — render_ui call + at most one short sentence, never a text description:
+- **`predict_nav`** (back tap) → run `python3 polymarket.py board <category>` and render (surfaceId
+  `"genie_predict"`, mode replace). ZERO web searches, ZERO deliberation — this is pure navigation;
+  the script has a cache, the whole turn should be one command + one render.
+- **`predict_forecast`** → run the FORECASTING flow for that slug (below), then
+  `forecast <slug> <read> '<reasons>' '<play>' --back=<cat from payload, verbatim>` and render
+  (surfaceId `"genie_predict"`, mode replace). Speed rules: crypto price markets ZERO searches
+  (Deribit anchor IS the read); everything else MAX ONE search. No delegate agents, ever.
+
+**FORECAST ARGUMENTS ARE MANDATORY — an empty card is a bug.** Every `forecast` call MUST include:
+your read pct (never blank for non-crypto), 2-3 pipe-delimited reasons (ALWAYS — even a "no edge,
+fairly priced" call gets reasons explaining WHY it's fair), and a one-line play rationale. A forecast
+rendered with no WHY section and read == market means you skipped the analysis — that's the exact
+"broken empty card" failure this rule exists to prevent. If you genuinely see no edge, say so IN the
+arguments: read near market, reasons stating what's priced in, play "Lean" toward the marginal value side.
+
+**If `board` returns markets that don't match a category** (wrong data, empty, API hiccup):
 render its output anyway — the board shows an honest "no markets" state on its own. NEVER hand-build
 board or forecast HTML from `events` text output or from your own knowledge; a hand-built surface has
 no working taps and breaks the whole loop. The script is the only source of surface HTML.
 
-Category → tag: politics→politics, crypto→crypto, sports→sports, world cup→world-cup,
-geopolitics→geopolitics, economy→economics, finance→finance, tech→tech, culture→culture, trending→(none).
+`board` accepts the category KEY directly (trending/politics/crypto/sports/worldcup/geopolitics/
+economy/finance/tech/culture) — no tag conversion is ever your job.
 
 **Fallback ONLY — read this before ever using SCREEN 0/1 markdown below:** the markdown screens
 further down this file exist for the rare case where the `render_ui` tool is not present at all in

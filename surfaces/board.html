@@ -55,7 +55,7 @@
   var app = document.getElementById("app");
 
   // Trigger an agent turn the way Genie surfaces actually do it: genie.emit(event, payload).
-  // (sendPrompt is not available in the render_ui sandbox; genie.emit is what the games use.)
+  // Only MARKET taps need the agent (research). Category switching is client-side from B.boards.
   function emit(event, payload){
     try{ if(window.genie && genie.emit) genie.emit(event, payload||{}); }catch(e){}
   }
@@ -71,40 +71,51 @@
     return;
   }
 
-  var h = '';
-  h += '<div class="hd">'+(B.headingEmoji||"🔥")+' '+esc(B.heading||"Trending")+'</div>';
-  h += '<div class="sub">Tap a category to browse · tap a market for Genie\'s read &amp; edge</div>';
+  var boards = B.boards || {};
+  if(!boards[B.activeCategory] && Array.isArray(B.markets)) boards[B.activeCategory] = B.markets; // legacy shape
+  var active = B.activeCategory || "trending";
 
-  // category chips
-  h += '<div class="cats">';
-  B.categories.forEach(function(c){
-    var on = c.key === B.activeCategory ? " active" : "";
-    h += '<button class="chip'+on+'" data-nav="'+esc(c.key)+'">'
-       + '<span class="e">'+(c.emoji||"")+'</span>'+esc(c.label)+'</button>';
-  });
-  h += '</div>';
-
-  // markets
-  if(B.markets && B.markets.length){
-    B.markets.forEach(function(m){
-      var pct = Math.max(0, Math.min(100, +m.yesPct||0));
-      h += '<div class="mkt" data-slug="'+esc(m.slug)+'">'
-        + '<div class="body"><div class="t">'+esc(m.title)+'</div>'
-        + '<div class="m">'+(m.volume?esc(m.volume)+" traded":"")+'</div></div>'
-        + '<div class="odds"><div class="ring" style="--pct:'+pct+'"><span class="pv">'+Math.round(pct)+'</span></div>'
-        + '<div class="l">'+esc(m.yesLabel||"Yes")+'</div></div>'
-        + '</div>';
-    });
-  } else {
-    h += '<div class="empty">No markets to show here right now — try another category.</div>';
+  function catMeta(key){
+    for(var i=0;i<B.categories.length;i++) if(B.categories[i].key===key) return B.categories[i];
+    return {key:key,label:"Trending",emoji:"🔥"};
   }
 
-  h += '<div class="foot">Odds are the market\'s. Genie\'s independent read appears when you open a market.</div>';
+  function render(){
+    var meta = catMeta(active);
+    var h = '';
+    h += '<div class="hd">'+(meta.emoji||"🔥")+' '+esc(meta.label||"Trending")+'</div>';
+    h += '<div class="sub">Tap a category to browse · tap a market for Genie\'s read &amp; edge</div>';
 
-  app.innerHTML = h;
+    h += '<div class="cats">';
+    B.categories.forEach(function(c){
+      var on = c.key === active ? " active" : "";
+      h += '<button class="chip'+on+'" data-nav="'+esc(c.key)+'">'
+         + '<span class="e">'+(c.emoji||"")+'</span>'+esc(c.label)+'</button>';
+    });
+    h += '</div>';
 
-  // wire taps via event delegation → genie.emit, with INSTANT visual feedback so a tap is
-  // always acknowledged (and so we can tell a dead click from a slow agent response).
+    var markets = boards[active] || [];
+    if(markets.length){
+      markets.forEach(function(m){
+        var pct = Math.max(0, Math.min(100, +m.yesPct||0));
+        h += '<div class="mkt" data-slug="'+esc(m.slug)+'">'
+          + '<div class="body"><div class="t">'+esc(m.title)+'</div>'
+          + '<div class="m">'+(m.volume?esc(m.volume)+" traded":"")+'</div></div>'
+          + '<div class="odds"><div class="ring" style="--pct:'+pct+'"><span class="pv">'+Math.round(pct)+'</span></div>'
+          + '<div class="l">'+esc(m.yesLabel||"Yes")+'</div></div>'
+          + '</div>';
+      });
+    } else {
+      h += '<div class="empty">No markets to show here right now — try another category.</div>';
+    }
+
+    h += '<div class="foot">Odds are the market\'s. Genie\'s independent read appears when you open a market.</div>';
+    app.innerHTML = h;
+  }
+
+  render();
+
+  // Market taps go to the agent (they need research). Category taps are LOCAL — instant.
   function ack(el, label){
     el.style.opacity = "0.55";
     var note = document.createElement("div");
@@ -116,18 +127,14 @@
   app.addEventListener("click", function(e){
     var chip = e.target.closest("[data-nav]");
     if(chip){
-      // immediate active-state switch so the tap is visibly registered
-      var chips = app.querySelectorAll(".chip");
-      for(var i=0;i<chips.length;i++) chips[i].className = chips[i].className.replace(" active","");
-      chip.className += " active";
-      ack(chip, chip.textContent.trim());
-      emit("predict_nav", {category: chip.getAttribute("data-nav")});
+      active = chip.getAttribute("data-nav");
+      render();   // client-side switch — no emit, no agent turn, no waiting
       return;
     }
     var mkt = e.target.closest("[data-slug]");
     if(mkt){
       ack(mkt, "forecast");
-      emit("predict_forecast", {slug: mkt.getAttribute("data-slug"), cat: B.activeCategory || "trending"});
+      emit("predict_forecast", {slug: mkt.getAttribute("data-slug"), cat: active});
       return;
     }
   });
