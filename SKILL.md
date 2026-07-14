@@ -29,9 +29,13 @@ no markets or errored, tell the user in chat and try a different category — do
 The surface shows Polymarket-style category chips (Trending, Politics, Crypto, Sports, World Cup,
 Geopolitics, Economy, Finance, Tech, Culture) plus live markets, and is static/instant.
 
-**It's self-driving:** tapping a category chip sends "show <category> markets" to chat → you re-run
-STEP 1+2 with that tag. Tapping a market sends "forecast <slug>" → you run the FORECASTING flow below.
-So don't narrate options as text — just render the populated board and let the user tap.
+**It's self-driving via events:** the board surface emits events when tapped (the same `genie.emit`
+mechanism the games use — `sendPrompt` is NOT available in the sandbox). Handle them:
+- **`predict_nav` `{category}`** → the user tapped a category chip. Re-run STEP 1+2 with that
+  category's tag (e.g. category "crypto" → `board_ui crypto`), re-render the board.
+- **`predict_forecast` `{slug}`** → the user tapped a market. Run the FORECASTING flow for that slug
+  (→ `forecast_ui <slug> …` → render `forecast.html`).
+Don't narrate options as text — render the populated board and let taps drive.
 
 Category → tag for `board_ui`: politics→politics, crypto→crypto, sports→sports, world cup→world-cup,
 geopolitics→geopolitics, economy→economics, finance→finance, tech→tech, culture→culture, trending→(none).

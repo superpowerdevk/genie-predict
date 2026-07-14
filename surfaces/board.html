@@ -4,7 +4,7 @@
 <!--
   Genie Predict — category board surface.
   FAST BY DESIGN: no canvas, no loop, no fetch, no libraries, no web fonts. Paints once.
-  Agent injects window.__BOARD__ before this runs. Tapping a tile/market calls sendPrompt().
+  Agent injects window.__BOARD__ before this runs. Taps fire genie.emit (predict_nav / predict_forecast).
 -->
 <style>
   :root{
@@ -54,7 +54,11 @@
   var B = window.__BOARD__ || null;
   var app = document.getElementById("app");
 
-  function go(prompt){ try{ if(window.sendPrompt) window.sendPrompt(prompt); }catch(e){} }
+  // Trigger an agent turn the way Genie surfaces actually do it: genie.emit(event, payload).
+  // (sendPrompt is not available in the render_ui sandbox; genie.emit is what the games use.)
+  function emit(event, payload){
+    try{ if(window.genie && genie.emit) genie.emit(event, payload||{}); }catch(e){}
+  }
   function esc(s){ return String(s==null?"":s).replace(/[&<>"]/g,function(c){return {"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c];}); }
 
   if(!B || typeof B !== "object" || !Array.isArray(B.categories)){
@@ -63,7 +67,7 @@
       + '<div style="color:#fff;font-weight:700;font-size:14px">Genie Predict</div>'
       + '<div style="margin-top:6px">Tap to load the live prediction markets →</div></div>';
     var lb = document.getElementById("loadbtn");
-    if(lb) lb.addEventListener("click", function(){ go("show trending markets"); });
+    if(lb) lb.addEventListener("click", function(){ emit("predict_nav", {category:"trending"}); });
     return;
   }
 
@@ -75,7 +79,7 @@
   h += '<div class="cats">';
   B.categories.forEach(function(c){
     var on = c.key === B.activeCategory ? " active" : "";
-    h += '<button class="chip'+on+'" data-p="'+esc(c.prompt)+'">'
+    h += '<button class="chip'+on+'" data-nav="'+esc(c.key)+'">'
        + '<span class="e">'+(c.emoji||"")+'</span>'+esc(c.label)+'</button>';
   });
   h += '</div>';
@@ -84,7 +88,7 @@
   if(B.markets && B.markets.length){
     B.markets.forEach(function(m){
       var pct = Math.max(0, Math.min(100, +m.yesPct||0));
-      h += '<div class="mkt" data-p="'+esc(m.prompt)+'">'
+      h += '<div class="mkt" data-slug="'+esc(m.slug)+'">'
         + '<div class="body"><div class="t">'+esc(m.title)+'</div>'
         + '<div class="m">'+(m.volume?esc(m.volume)+" traded":"")+'</div></div>'
         + '<div class="odds"><div class="ring" style="--pct:'+pct+'"><span class="pv">'+Math.round(pct)+'</span></div>'
@@ -99,10 +103,12 @@
 
   app.innerHTML = h;
 
-  // wire taps (event delegation; no inline handlers)
+  // wire taps via event delegation → genie.emit
   app.addEventListener("click", function(e){
-    var el = e.target.closest("[data-p]");
-    if(el) go(el.getAttribute("data-p"));
+    var chip = e.target.closest("[data-nav]");
+    if(chip){ emit("predict_nav", {category: chip.getAttribute("data-nav")}); return; }
+    var mkt = e.target.closest("[data-slug]");
+    if(mkt){ emit("predict_forecast", {slug: mkt.getAttribute("data-slug")}); return; }
   });
 })();
 </script>

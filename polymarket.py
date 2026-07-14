@@ -132,11 +132,20 @@ def _fmt_money(v) -> str:
         v = float(v)
     except Exception:
         return "?"
+    if v >= 1e9:
+        return f"${v/1e9:.1f}B"
     if v >= 1e6:
         return f"${v/1e6:.1f}M"
     if v >= 1e3:
         return f"${v/1e3:.0f}K"
     return f"${v:.0f}"
+
+
+def _json_for_inline_script(obj) -> str:
+    r"""JSON safe to inject inside a <script> tag: escape '</' so '</script>' inside
+    strings cannot terminate the script block. '<\/' is valid JSON and parses back
+    identical to '</' in the browser."""
+    return json.dumps(obj).replace("</", "<\\/")
 
 
 def _date(s) -> str:
@@ -456,7 +465,7 @@ def cmd_resolve(forecast_id: str, outcome: str) -> None:
 
 
 # Polymarket-style top-level categories. Each maps to a Gamma tag the board can filter by.
-# 'prompt' is what a tapped tile sends back to chat via sendPrompt().
+# (navigation is driven by genie.emit in the surface; see board.html)
 CATEGORIES = [
     {"key": "trending",   "label": "Trending",    "emoji": "🔥", "tag": None,          "prompt": "show trending markets"},
     {"key": "politics",   "label": "Politics",    "emoji": "🏛️", "tag": "politics",     "prompt": "show politics markets"},
@@ -521,7 +530,7 @@ def cmd_board_ui(tag: str | None = None, limit: int = 6) -> None:
         "headingEmoji": next((c["emoji"] for c in CATEGORIES if c["key"] == active_key), "🔥"),
         "markets": markets,
     }
-    print(json.dumps(blob))
+    print(_json_for_inline_script(blob))
 
 
 def cmd_forecast_ui(slug: str, my_read: str = "", reasons_json: str = "") -> None:
@@ -630,7 +639,7 @@ def cmd_forecast_ui(slug: str, my_read: str = "", reasons_json: str = "") -> Non
         "url": f"https://polymarket.com/event/{event_slug}",
         "track": track,
     }
-    print(json.dumps(blob))
+    print(_json_for_inline_script(blob))
 
 
 def cmd_market(slug: str) -> None:
